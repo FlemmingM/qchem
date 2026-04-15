@@ -1,0 +1,13 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "qchem"
+version = "0.1.0"
+description = "Quantum chemistry calculations"
+requires-python = ">=3.11"
+authors = [{name = "Your Name", email = "your@email.com"}]
+
+[tool.setuptools.packages.find]
+where = ["src"]
