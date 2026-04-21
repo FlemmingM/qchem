@@ -10,6 +10,42 @@ import qrunch as qc
 from qrunch.chemistry.reduced_density_matrices.reduced_density_matrix_calculator import ReducedDensityMatrixCalculator
 from dmdm.interface import DMDM
 
+
+def scale_molecule(molecule: list, scale_factor: float, basis: str) -> gto.M:
+    """
+    Scales the atomic coordinates of a molecule by a given factor.
+    
+    Parameters:
+    -----------
+    molecule : list of tuples
+        A list of tuples representing the atoms and their coordinates.
+        Format: [('atom_name', x, y, z), ...]
+    scale_factor : float
+        The factor by which to stretch (greater than 1) or compress (less than 1) the molecule.
+    basis: str
+        The basis.
+
+    Returns:
+    --------
+    gto.M
+        A new molecule object with the scaled atomic coordinates.
+    """
+    # Extract the atom names and coordinates
+    atom_names = [atom[0] for atom in molecule]
+    coords = np.array([atom[1:] for atom in molecule])  # Coordinates (x, y, z)
+    
+    # Apply the scaling factor to all coordinates (stretching or compressing)
+    new_coords = coords * scale_factor
+    
+    # Create a new molecule with the scaled coordinates
+    new_molecule = gto.M(
+        atom=[(atom_names[i], tuple(new_coords[i])) for i in range(len(molecule))],
+        basis=basis  # Use a default basis set (you can change it if needed)
+    )
+    
+    return new_molecule
+
+
 class MoleculeData:
     molecules = {
     "H2O": {
@@ -175,11 +211,12 @@ class DMDMWorkflow:
         num_active_electrons: int,
         num_states: int,
         mode: CalculationMode = CalculationMode.BOTH,
+        scale_factor: float = 1.0,
         # VQE Specific Inputs
         vqe_max_iterations: int = 1000,
         vqe_patience: int = 10,
         vqe_threshold: float = 1e-10,
-        verbose: int = 0
+        verbose: int = 0,
     ):
         """
         Initialize the workflow.
@@ -197,7 +234,7 @@ class DMDMWorkflow:
             verbose: Verbosity level.
         """
         self.basis = basis
-        self.molecule = molecule
+        self.molecule_list = molecule
         self.num_active_orbitals = num_active_orbitals
         self.num_active_electrons = num_active_electrons
         self.num_states = num_states
@@ -212,13 +249,223 @@ class DMDMWorkflow:
 
         # Results Storage
         self._casci_results: Optional[Dict] = None
+        self._casscf_results: Optional[Dict] = None
         self._vqe_results: Optional[Dict] = None
-        self._dmdm_casci: Optional[DMDM] = None
-        self._dmdm_vqe: Optional[DMDM] = None
+        self._dmdm_casci: Optional[Any] = None
+        self._dmdm_vqe: Optional[Any] = None
+        
+        # PEC Results Storage
+        self._pec_casci: Optional[Dict] = None
+        self._pec_casscf: Optional[Dict] = None
+        self._pec_vqe: Optional[Dict] = None
         
         # Internal state flags
         self._casci_done = False
+        self._casscf_done = False
         self._vqe_done = False
+        self.scale_factor = scale_factor
+
+        # Initial molecule setup
+        self.molecule = scale_molecule(
+            self.molecule_list,
+            self.scale_factor,
+            self.basis
+        )
+
+
+    def run_classical_casscf_average(self) -> Dict[str, Any]:
+        """Run the classical CASSCF workflow using PySCF."""
+        
+
+        weights = np.ones(self.num_states)/self.num_states
+        # 2. RHF & MP2
+        mf = scf.RHF(self.molecule).run()
+        mp2 = mp.MP2(mf).run()
+        _, natorbs = mcscf.addons.make_natural_orbitals(mp2)
+
+        # 3. CASSCF (for multiple roots, specify nroots > 1)
+        mc = mcscf.CASSCF(
+            mf,
+            ncas=self.num_active_orbitals,
+            nelecas=self.num_active_electrons
+            ).state_average_(weights)
+        mc.max_cycle = 100  # Increase the max cycles if needed
+        mc.conv_tol = 1e-8  # Tighter convergence
+
+        # Optionally, use natural orbitals as initial guess
+        mc.mo_coeff = natorbs  # Uncomment if you want to use natural orbitals
+
+        # 4. Run the CASSCF calculation to compute all roots
+        e_tot, e_cas, ci, mo, mo_energy = mc.kernel()
+
+        # 5. Integrals
+        h_mo, _ = mc.get_h1eff()
+        g_mo = mc.get_h2eff()
+        g_mo = ao2mo.restore(1, g_mo, self.num_active_orbitals)
+
+        # 6. RDM Reconstruction & DMDM
+        rdm_active_energies = []
+        rdm_data_list = []
+
+        for i in range(self.num_states):
+            ci_vec = ci[i]
+            rdm1, rdm2, rdm3, rdm4 = mc.fcisolver.make_rdm1234(ci_vec, self.num_active_orbitals, self.num_active_electrons)
+            
+            e1 = np.einsum('pq,pq', h_mo, rdm1)
+            e2 = 0.5 * np.einsum('pqrs,pqrs', g_mo, rdm2)
+            rdm_active_energies.append(e1 + e2)
+            rdm_data_list.append((rdm1, rdm2, rdm3, rdm4))
+
+        rdm_active_energies = np.array(rdm_active_energies)
+        E_core = e_tot - e_cas
+        rdm_total_energies = rdm_active_energies + E_core
+
+        # Dipole Integrals
+        x_ao, y_ao, z_ao = self.molecule.intor('int1e_r', comp=3)
+        cas_slice = slice(mc.ncore, mc.ncore + self.num_active_orbitals)
+        C_cas = mo[:, cas_slice]
+        
+        x_cas = one_electron_integral_transform(C_cas, x_ao)
+        y_cas = one_electron_integral_transform(C_cas, y_ao)
+        z_cas = one_electron_integral_transform(C_cas, z_ao)
+        MO_DM = [x_cas, y_cas, z_cas]
+
+        # Initialize DMDM
+        gs_rdm = rdm_data_list[0]
+        dmdm = DMDM(
+            h_mo,
+            g_mo,
+            0,
+            self.num_active_orbitals,
+            0,
+            self.num_active_electrons,
+            gs_rdm[0],
+            rdm2=gs_rdm[1],
+            rdm3=gs_rdm[2],
+            rdm4=gs_rdm[3]
+        )
+
+        # Get energies
+        exc_energies = dmdm.get_excitation_energies() * self.hartree_to_ev
+
+        # Get Oscillator Strengths
+        osc_strengths = dmdm.get_oscillator_strength(MO_DM)
+
+        # Store results
+        self._casscf_results = {
+            'exc_energies_ev': np.concatenate(([0.0], exc_energies[:self.num_states-1])),
+            'oscillator_strengths': np.concatenate(([0.0], osc_strengths[:self.num_states-1])),
+            'total_energies': rdm_total_energies,
+            'e_cas': e_cas,
+            'dmdm_obj': dmdm
+        }
+        self._casscf_done = True
+
+        if self.verbose > 0:
+            print("Done with CASSCF computations...\n")
+        
+        return self._casscf_results
+
+
+    def run_classical_casscf(self) -> Dict[str, Any]:
+        """Run the classical CASSCF workflow using PySCF."""
+
+        weights = np.ones(self.num_states)/self.num_states
+        # 2. RHF & MP2
+        mf = scf.RHF(self.molecule).run()
+        mp2 = mp.MP2(mf).run()
+        _, natorbs = mcscf.addons.make_natural_orbitals(mp2)
+
+        # 5. Integrals
+
+
+        # 6. RDM Reconstruction & DMDM
+        rdm_active_energies = []
+        rdm_data_list = []
+        energies_direct = []
+        e_ground_state = 0.0
+
+        for i in range(self.num_states):
+            print("Optimising state: ", i)
+            mc = mcscf.CASSCF(
+            mf,
+            ncas=self.num_active_orbitals,
+            nelecas=self.num_active_electrons
+            ).state_specific_(state=i)
+
+            mc.max_cycle = 1000  # Increase the max cycles if needed
+            mc.conv_tol = 1e-8  # Tighter convergence
+            mc.mo_coeff = natorbs
+
+            e_tot, e_cas, ci, mo, mo_energy = mc.kernel()
+            if i == 0:
+                e_ground_state = e_cas
+
+            h_mo, _ = mc.get_h1eff()
+            g_mo = mc.get_h2eff()
+            g_mo = ao2mo.restore(1, g_mo, self.num_active_orbitals)
+
+            ci_vec = ci
+            rdm1, rdm2, rdm3, rdm4 = mc.fcisolver.make_rdm1234(ci_vec, self.num_active_orbitals, self.num_active_electrons)
+            
+            e1 = np.einsum('pq,pq', h_mo, rdm1)
+            e2 = 0.5 * np.einsum('pqrs,pqrs', g_mo, rdm2)
+            rdm_active_energies.append(e1 + e2)
+            rdm_data_list.append((rdm1, rdm2, rdm3, rdm4))
+            energies_direct.append(
+                (e_cas - e_ground_state) * self.hartree_to_ev
+            )
+
+        rdm_active_energies = np.array(rdm_active_energies)
+        E_core = e_tot - e_cas
+        rdm_total_energies = rdm_active_energies + E_core
+
+        # Dipole Integrals
+        x_ao, y_ao, z_ao = self.molecule.intor('int1e_r', comp=3)
+        cas_slice = slice(mc.ncore, mc.ncore + self.num_active_orbitals)
+        C_cas = mo[:, cas_slice]
+        
+        x_cas = one_electron_integral_transform(C_cas, x_ao)
+        y_cas = one_electron_integral_transform(C_cas, y_ao)
+        z_cas = one_electron_integral_transform(C_cas, z_ao)
+        MO_DM = [x_cas, y_cas, z_cas]
+
+        # Initialize DMDM
+        gs_rdm = rdm_data_list[0]
+        dmdm = DMDM(
+            h_mo,
+            g_mo,
+            0,
+            self.num_active_orbitals,
+            0,
+            self.num_active_electrons,
+            gs_rdm[0],
+            rdm2=gs_rdm[1],
+            rdm3=gs_rdm[2],
+            rdm4=gs_rdm[3]
+        )
+
+        # Get energies
+        exc_energies = dmdm.get_excitation_energies() * self.hartree_to_ev
+
+        # Get Oscillator Strengths
+        osc_strengths = dmdm.get_oscillator_strength(MO_DM)
+
+        # Store results
+        self._casscf_results = {
+            'exc_energies_direct_ev': np.array(energies_direct),
+            'exc_energies_ev': np.concatenate(([0.0], exc_energies[:self.num_states-1])),
+            'oscillator_strengths': np.concatenate(([0.0], osc_strengths[:self.num_states-1])),
+            'total_energies': rdm_total_energies,
+            'e_cas': e_cas,
+            'dmdm_obj': dmdm
+        }
+        self._casscf_done = True
+
+        if self.verbose > 0:
+            print("Done with CASSCF computations...\n")
+        
+        return self._casscf_results
 
     # ==========================
     # CLASSICAL (CASCI) PATH
@@ -226,20 +473,15 @@ class DMDMWorkflow:
 
     def run_classical_casci(self) -> Dict[str, Any]:
         """Run the classical CASCI workflow using PySCF."""
-                
-
-        mol = gto.M(
-            atom=self.molecule,
-            basis=self.basis
-        )
 
         # 2. RHF & MP2
-        mf = scf.RHF(mol).run()
-        mp2 = mp.MP2(mf).run()
+        mf = scf.RHF(self.molecule).run()
+        # mp2 = mp.MP2(mf).run()
         # _, natorbs = mcscf.addons.make_natural_orbitals(mp2)
 
         # 3. CASCI
         mc = mcscf.CASCI(mf, ncas=self.num_active_orbitals, nelecas=self.num_active_electrons)
+        # mc = mcscf.CASSCF(mf, ncas=self.num_active_orbitals, nelecas=self.num_active_electrons)
         mc.fcisolver.nroots = self.num_states
         # mc.mo_coeff = natorbs # Optional: use natural orbitals
         
@@ -269,7 +511,7 @@ class DMDMWorkflow:
 
 
         # Dipole Integrals
-        x_ao, y_ao, z_ao = mol.intor('int1e_r', comp=3)
+        x_ao, y_ao, z_ao = self.molecule.intor('int1e_r', comp=3)
         cas_slice = slice(mc.ncore, mc.ncore + self.num_active_orbitals)
         C_cas = mo[:, cas_slice]
         
@@ -319,7 +561,7 @@ class DMDMWorkflow:
         """Run the VQE workflow using qrunch/qchem."""
 
         # 3. Build Configuration
-        molecular_configuration = qc.build_molecular_configuration(molecule=self.molecule, basis_set=self.basis)
+        molecular_configuration = qc.build_molecular_configuration(molecule=self.molecule_list, basis_set=self.basis)
         
         num_inactive_orbs = molecular_configuration.number_of_alpha_electrons() - (self.num_active_electrons // 2)
         num_spatial_orbs = molecular_configuration.number_of_spatial_orbitals()
@@ -342,11 +584,11 @@ class DMDMWorkflow:
         ground_state_problem = problem_builder.build_restricted(molecular_configuration)
 
         # 5. Setup Calculator (VQE)
-        gate_selector = qc.gate_selector_creator().adapt().create()
         calculator = (
             qc.calculator_creator()
             .vqe()
-            .iterative()
+            # .iterative()
+            .iterative_with_orbital_optimization()
             .standard()
             .with_options(options=qc.options.IterativeVqeOptions(max_iterations=self.vqe_max_iterations))
             .choose_stopping_criterion()
@@ -358,12 +600,12 @@ class DMDMWorkflow:
         result = calculator.calculate(ground_state_problem)
 
         # 7. Extract Integrals & RDMs
-        mol = molecular_configuration.pyscf_molecule
+        self.molecule = molecular_configuration.pyscf_molecule
         mo_coeffs = problem_builder._restricted_builder._calculate_molecular_orbitals(molecular_configuration).alpha.coefficients
 
         # Transform AO to MO
-        h_mo = one_electron_integral_transform(mo_coeffs, mol.intor("int1e_kin") + mol.intor("int1e_nuc"))
-        g_mo = two_electron_integral_transform(mo_coeffs, mol.intor("int2e"))
+        h_mo = one_electron_integral_transform(mo_coeffs, self.molecule.intor("int1e_kin") + self.molecule.intor("int1e_nuc"))
+        g_mo = two_electron_integral_transform(mo_coeffs, self.molecule.intor("int2e"))
 
         # Overwrite active space with problem integrals
         cas_slice = slice(num_inactive_orbs, num_inactive_orbs + self.num_active_orbitals)
@@ -392,7 +634,7 @@ class DMDMWorkflow:
         )
 
         # 10. Dipole & Oscillator Strengths
-        x, y, z = mol.intor('int1e_r', comp=3)
+        x, y, z = self.molecule.intor('int1e_r', comp=3)
         # Note: Original script used coefs = mo_coeffs[:, :num_active_electrons] which seems odd for spatial orbitals
         # Usually we slice by active orbitals. Using the active slice here for consistency.
         coefs = mo_coeffs[:, cas_slice] 
@@ -424,6 +666,7 @@ class DMDMWorkflow:
     def plot_spectrum(
         self,
         show_casci: bool = True,
+        show_casscf: bool = True,
         show_vqe: bool = True,
         sigma: float = 0.2,
         title: Optional[str] = None,
@@ -433,8 +676,8 @@ class DMDMWorkflow:
         Plot the excitation spectrum.
         Can plot CASCI, VQE, or both for comparison.
         """
-        if not show_casci and not show_vqe:
-            raise ValueError("Must show at least one method (CASCI or VQE).")
+        if not show_casci and not show_casscf and not show_vqe:
+            raise ValueError("Must show at least one method (CASCI, CASSCF or VQE).")
 
         x = np.linspace(0, 30, 1000)
         
@@ -449,9 +692,19 @@ class DMDMWorkflow:
             for e, f in zip(data['exc_energies_ev'], data['oscillator_strengths']):
                 spectrum += f * np.exp(-(x - e)**2 / (2 * sigma**2))
             
-            ax.plot(x, spectrum, label="CASCI (Smooth)", color='blue', alpha=0.8)
+            ax.plot(x, spectrum, label="CASCI (Smooth)", color='green', alpha=0.8)
             ax.vlines(data['exc_energies_ev'], 0, data['oscillator_strengths'], color='blue', alpha=0.4, linewidth=1)
             legend_items.append("CASCI")
+        
+        if show_casscf and self._casscf_results:
+            data = self._casscf_results
+            spectrum = np.zeros_like(x)
+            for e, f in zip(data['exc_energies_ev'], data['oscillator_strengths']):
+                spectrum += f * np.exp(-(x - e)**2 / (2 * sigma**2))
+            
+            ax.plot(x, spectrum, label="CASSCF (Smooth)", color='blue', alpha=0.8)
+            ax.vlines(data['exc_energies_ev'], 0, data['oscillator_strengths'], color='blue', alpha=0.4, linewidth=1)
+            legend_items.append("CASSCF")
 
         # Plot VQE
         if show_vqe and self._vqe_results:
@@ -488,6 +741,12 @@ class DMDMWorkflow:
             except Exception as e:
                 print(f"Error running CASCI: {e}")
 
+        if self.mode in [CalculationMode.CLASSICAL, CalculationMode.BOTH]:
+            try:
+                results['casscf'] = self.run_classical_casscf_average()
+            except Exception as e:
+                print(f"Error running CASSCF: {e}")
+
         if self.mode in [CalculationMode.QUANTUM, CalculationMode.BOTH]:
             try:
                 results['vqe'] = self.run_quantum_vqe()
@@ -498,6 +757,265 @@ class DMDMWorkflow:
             self.plot_spectrum(show_casci='casci' in results, show_vqe='vqe' in results)
 
         return results
+
+    def compute_pec(
+        self,
+        scale_range: Tuple[float, float],
+        num_points: int = 10,
+        method: str = "casci",
+        plot: bool = False
+        ) -> Dict[str, Any]:
+        """
+        Compute excited-state potential energy curves by scaling the molecule.
+        
+        Uses your scale_molecule function to generate displaced geometries.
+        
+        Args:
+            scale_range: (min_scale, max_scale) scaling factors
+            num_points: Number of geometry points to evaluate
+            method: 'casci', 'casscf', 'casscf_average', or 'vqe'
+            plot: Whether to plot the results immediately
+        
+        Returns:
+            Dictionary containing scale_factors, energies for each state, and metadata
+        """
+        if method not in ['casci', 'casscf', 'casscf_average', 'vqe']:
+            raise ValueError(f"Unknown method: {method}. Choose from 'casci', 'casscf', 'casscf_average', 'vqe'")
+        
+        if self.verbose > 0:
+            print(f"Computing PEC for {method} method...")
+        
+        # Generate scale factors
+        scale_factors = np.linspace(scale_range[0], scale_range[1], num_points)
+        energies = np.zeros((num_points, self.num_states))
+        distances = []  # Store actual distances if needed
+        
+        # Store original molecule
+        original_molecule = self.molecule_list
+        original_scale = self.scale_factor
+        
+        for i, scale in enumerate(scale_factors):
+            if self.verbose > 1:
+                print(f"  Computing point {i+1}/{num_points}: scale = {scale:.3f}")
+            
+            try:
+                # Scale the molecule using your function
+                self.molecule = scale_molecule(
+                    original_molecule,
+                    scale,
+                    self.basis
+                )
+                
+                # Update scale_factor for tracking
+                self.scale_factor = scale
+                
+                # Run the chosen method
+                if method == 'casci':
+                    result = self.run_classical_casci()
+                elif method == 'casscf':
+                    result = self.run_classical_casscf()
+                elif method == 'casscf_average':
+                    result = self.run_classical_casscf_average()
+                elif method == 'vqe':
+                    result = self.run_quantum_vqe()
+                
+                # Extract excitation energies (first state is ground state at 0.0)
+                exc_energies = result['exc_energies_ev']
+                energies[i, :] = exc_energies
+                
+                # Store actual distance info if available (e.g., bond length)
+                # This depends on your molecule - could calculate specific bond distances
+                distances.append(scale)
+                
+            except Exception as e:
+                if self.verbose > 0:
+                    print(f"  Error at point {i} (scale={scale:.3f}): {e}")
+                energies[i, :] = np.nan
+        
+        # Restore original molecule
+        self.molecule = scale_molecule(original_molecule, original_scale, self.basis)
+        self.scale_factor = original_scale
+        
+        # Store results
+        pec_data = {
+            'scale_factors': scale_factors,
+            'energies': energies,
+            'method': method,
+            'scale_range': scale_range,
+            'num_points': num_points,
+            'states': list(range(self.num_states)),
+            'molecule': original_molecule
+        }
+        
+        # Store in appropriate attribute
+        if method == 'casci':
+            self._pec_casci = pec_data
+        elif method in ['casscf', 'casscf_average']:
+            self._pec_casscf = pec_data
+        elif method == 'vqe':
+            self._pec_vqe = pec_data
+        
+        if plot:
+            self.plot_pec(method=method)
+        
+        return pec_data
+
+    def plot_pec(
+        self,
+        method: Optional[str] = None,
+        show_casci: bool = True,
+        show_casscf: bool = True,
+        show_vqe: bool = True,
+        figsize: Tuple[int, int] = (10, 6),
+        title: Optional[str] = None,
+        show: bool = True
+    ) -> plt.Figure:
+        """
+        Plot potential energy curves for one or multiple methods.
+        
+        Args:
+            method: Specific method to plot ('casci', 'casscf', 'vqe')
+            show_casci: Whether to show CASCI curves
+            show_casscf: Whether to show CASSCF curves
+            show_vqe: Whether to show VQE curves
+            figsize: Figure size (width, height)
+            title: Plot title
+            show: Whether to display the plot
+        
+        Returns:
+            matplotlib Figure object
+        """
+        fig, ax = plt.subplots(figsize=figsize)
+        
+        colors = {
+            'casci': 'green',
+            'casscf': 'blue',
+            'vqe': 'red'
+        }
+        
+        linestyles = {
+            'casci': '-',
+            'casscf': '--',
+            'vqe': '-.'
+        }
+        
+        legend_labels = []
+        
+        # Helper to plot curves for a given method
+        def plot_method_curves(pec_data, method_name, color, linestyle):
+            if pec_data is None:
+                return
+            
+            scale_factors = pec_data['scale_factors']
+            energies = pec_data['energies']
+            
+            for state_idx in range(self.num_states):
+                state_energies = energies[:, state_idx]
+                
+                # Handle NaN values
+                valid_mask = ~np.isnan(state_energies)
+                if np.any(valid_mask):
+                    ax.plot(
+                        scale_factors[valid_mask],
+                        state_energies[valid_mask],
+                        label=f"{method_name} State {state_idx}",
+                        color=color,
+                        linestyle=linestyle,
+                        alpha=0.8,
+                        linewidth=2
+                    )
+        
+        # Plot each method if requested
+        if method:
+            # Plot specific method only
+            if method == 'casci' and show_casci and self._pec_casci:
+                plot_method_curves(self._pec_casci, "CASCI", colors['casci'], linestyles['casci'])
+                legend_labels.append("CASCI")
+            elif method == 'casscf' and show_casscf and self._pec_casscf:
+                plot_method_curves(self._pec_casscf, "CASSCF", colors['casscf'], linestyles['casscf'])
+                legend_labels.append("CASSCF")
+            elif method == 'vqe' and show_vqe and self._pec_vqe:
+                plot_method_curves(self._pec_vqe, "VQE", colors['vqe'], linestyles['vqe'])
+                legend_labels.append("VQE")
+        else:
+            # Plot all requested methods
+            if show_casci and self._pec_casci:
+                plot_method_curves(self._pec_casci, "CASCI", colors['casci'], linestyles['casci'])
+                legend_labels.append("CASCI")
+            
+            if show_casscf and self._pec_casscf:
+                plot_method_curves(self._pec_casscf, "CASSCF", colors['casscf'], linestyles['casscf'])
+                legend_labels.append("CASSCF")
+            
+            if show_vqe and self._pec_vqe:
+                plot_method_curves(self._pec_vqe, "VQE", colors['vqe'], linestyles['vqe'])
+                legend_labels.append("VQE")
+        
+        ax.set_xlabel("Scaling Factor", fontsize=12)
+        ax.set_ylabel("Energy (eV)", fontsize=12)
+        ax.set_title(
+            title or f"Excited-State Potential Energy Curves ({', '.join(legend_labels)})",
+            fontsize=14
+        )
+        ax.legend(loc='best', fontsize=10)
+        ax.grid(True, alpha=0.3)
+        
+        if show:
+            plt.tight_layout()
+            plt.show()
+        
+        return fig
+
+
+    def compare_pec_methods(
+        self,
+        scale_range: Tuple[float, float],
+        num_points: int = 10,
+        methods: Optional[List[str]] = None,
+        plot: bool = True
+    ) -> Dict[str, Dict]:
+        """
+        Compute and compare PECs across multiple methods.
+        
+        Args:
+            scale_range: (min_scale, max_scale) scaling factors
+            num_points: Number of points
+            methods: List of methods to compare (default: all available)
+            plot: Whether to plot comparison
+        
+        Returns:
+            Dictionary with PEC data for each method
+        """
+        if methods is None:
+            methods = ['casci', 'casscf_average', 'vqe']
+        
+        results = {}
+        
+        for method in methods:
+            try:
+                if self.verbose > 0:
+                    print(f"Computing PEC for {method}...")
+                
+                result = self.compute_pec(
+                    scale_range=scale_range,
+                    num_points=num_points,
+                    method=method,
+                    plot=False
+                )
+                results[method] = result
+                
+            except Exception as e:
+                if self.verbose > 0:
+                    print(f"Error computing PEC for {method}: {e}")
+                results[method] = None
+        
+        if plot:
+            self.plot_pec(show_casci='casci' in results, 
+                         show_casscf=('casscf' in results) or ('casscf_average' in results), 
+                         show_vqe='vqe' in results)
+        
+        return results
+
 
 
 def get_hf_gse_from_mol(
