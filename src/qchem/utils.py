@@ -1,7 +1,13 @@
 """ Uitilities.
 """
 
+import os
+from pathlib import Path
+import subprocess
 import numpy as np
+import pandas as pd
+import copy
+import re
 import matplotlib.pyplot as plt
 from typing import Any, Dict, List, Optional, Tuple
 from enum import Enum
@@ -9,6 +15,128 @@ from pyscf import gto, scf, fci, mp, mcscf, ao2mo
 import qrunch as qc
 from qrunch.chemistry.reduced_density_matrices.reduced_density_matrix_calculator import ReducedDensityMatrixCalculator
 from dmdm.interface import DMDM
+
+
+
+
+
+def run_dalton(
+    molecule_path : str,
+    dalton_path : str,
+    output_path : str,
+):
+
+    try:
+        # Run a command (e.g., list files on Linux/Mac or dir on Windows)
+        # Use a list for the command and arguments
+        result = subprocess.run(
+            [
+                "dalton",
+                "-dal" , dalton_path,
+                "-mol", molecule_path,
+                "-o", output_path
+            ],
+            capture_output=True,
+            text=True,
+            check=True
+            )
+        
+        print("Return Code:", result.returncode)
+        print("Output:\n", result.stdout)
+        print("Errors:\n", result.stderr)
+        
+    except subprocess.CalledProcessError as e:
+        print(f"Command failed with return code {e.returncode}")
+        print(f"Error output: {e.stderr}")
+    except FileNotFoundError:
+        print("Command not found!")
+
+
+
+def parse_dalton_output(filename: str):
+    """
+    Parses Dalton output to extract excitation energies and oscillator strengths.
+    Returns a pandas DataFrame.
+    """
+    try:
+        with open(filename, 'r') as f:
+            content = f.read()
+    except FileNotFoundError:
+        print(f"Error: {filename} not found.")
+        return None
+
+    # Regex patterns
+    # Matches the start of an excited state block
+    state_pattern = r'@ Excited state no:\s+(\d+)\s+in symmetry\s+\d+\s+\(\s*\w+\s*\)\s+-\s+singlet excitation'
+    
+    # Matches excitation energy in atomic units (au)
+    energy_pattern = r'@ Excitation energy\s*:\s+([\d\.E+-]+)\s+au'
+    
+    # Matches oscillator strength (LENGTH) for X, Y, Z
+    # We capture the value and the polarization direction
+    osc_pattern = r'@ Oscillator strength \(LENGTH\)\s*:\s+([\d\.E+-]+)\s+\((X|Y|Z)-polarization\)'
+
+    # Find all state blocks
+    states = []
+    current_state = {}
+    
+    # Split content by state blocks to iterate
+    # We use finditer to get the position of each state start
+    state_matches = list(re.finditer(state_pattern, content))
+    
+    for i, match in enumerate(state_matches):
+        state_num = int(match.group(1))
+        
+        # Define the start and end of this state's section
+        start_idx = match.start()
+        if i + 1 < len(state_matches):
+            end_idx = state_matches[i+1].start()
+        else:
+            end_idx = len(content)
+            
+        section_text = content[start_idx:end_idx]
+        
+        # Extract Energy
+        energy_match = re.search(energy_pattern, section_text)
+        energy_au = float(energy_match.group(1)) if energy_match else None
+        
+        # Convert to eV (1 au = 27.2114 eV)
+        energy_ev = energy_au * 27.2114 if energy_au else None
+        
+        # Extract Oscillator Strengths
+        osc_matches = re.findall(osc_pattern, section_text)
+        f_x = f_y = f_z = None
+        
+        for val, pol in osc_matches:
+            val_float = float(val)
+            if pol == 'X':
+                f_x = val_float
+            elif pol == 'Y':
+                f_y = val_float
+            elif pol == 'Z':
+                f_z = val_float
+        
+        # Calculate Total Oscillator Strength (sum of components)
+        f_total = (f_x or 0) + (f_y or 0) + (f_z or 0)
+
+        states.append({
+            'State': state_num,
+            'Energy_au': energy_au,
+            'Energy_eV': energy_ev,
+            'Oscillator_F_X': f_x,
+            'Oscillator_F_Y': f_y,
+            'Oscillator_F_Z': f_z,
+            'Oscillator_F_Total': f_total
+        })
+
+    if not states:
+        print("No excited states found in the output file.")
+        return None
+
+    return pd.DataFrame(states)
+
+def gaussian(x: np.array, energy: float, oscillator_strength: float, sigma: float=0.2):
+    return oscillator_strength * np.exp(-(x - energy)**2 / (2 * sigma**2))
 
 
 def scale_molecule(molecule: list, scale_factor: float, basis: str) -> gto.M:
@@ -44,6 +172,99 @@ def scale_molecule(molecule: list, scale_factor: float, basis: str) -> gto.M:
     )
     
     return new_molecule
+
+
+def scale_molecule_v2(molecule: list, scale_factor: float) -> list:
+    """
+    Scales the atomic coordinates of a molecule by a given factor.
+    
+    Parameters:
+    -----------
+    molecule : list of lists or list of tuples
+        A list of sequences representing the atoms and their coordinates.
+        Format: [['atom_name', x, y, z], ...] or [('atom_name', x, y, z), ...]
+    scale_factor : float
+        The factor by which to stretch (greater than 1) or compress (less than 1) the molecule.
+
+    Returns:
+    --------
+    list
+        A new list of lists with the scaled atomic coordinates.
+    """
+    # We construct a new list of lists to ensure immutability of the input 
+    # regardless of whether it was passed as tuples or lists.
+    scaled_molecule = []
+    
+    for atom_data in molecule:
+        # Extract the atom name (index 0)
+        atom_name = atom_data[0]
+        
+        # Extract coordinates (indices 1 onwards) and scale them
+        # Using a list comprehension for clarity and safety
+        scaled_coords = [coord * scale_factor for coord in atom_data[1:]]
+        
+        # Append the new atom entry as a list
+        scaled_molecule.append((atom_name,) + tuple(scaled_coords))
+    
+    return scaled_molecule
+
+
+def write_dalton_molecule_file(molecule: list, filename: str, basis: str = "cc-pVDZ", 
+                        molecule_name: str = None) -> None:
+    """
+    Writes molecule coordinates to a text file in the specified format.
+    
+    Parameters:
+    -----------
+    molecule : list of lists
+        A list of lists representing the atoms and their coordinates.
+        Format: [['atom_name', x, y, z], ...]
+    filename : str
+        Output file path
+    basis : str
+        Basis set name (default: cc-pVDZ)
+    molecule_name : str, optional
+        Name of the molecule (defaults to first atom element if not provided)
+    """
+    # Atomic charges (hardcoded for common elements - adjust as needed)
+    atomic_charges = {
+        'H': 1.0, 'He': 2.0, 'Li': 3.0, 'Be': 4.0, 'B': 5.0, 'C': 6.0,
+        'N': 7.0, 'O': 8.0, 'F': 9.0, 'Ne': 10.0
+    }
+    
+    # Group atoms by element type
+    atom_groups = {}
+    for atom in molecule:
+        element = atom[0]
+        if element not in atom_groups:
+            atom_groups[element] = []
+        atom_groups[element].append(atom[1:])  # Store only coordinates
+    
+    # Determine molecule name
+    if molecule_name is None:
+        # Build name from elements (simple approach)
+        molecule_name = ''.join(atom_groups.keys())
+    
+    # Calculate total atoms
+    total_atoms = sum(len(coords_list) for coords_list in atom_groups.values())
+    
+    # Write to file
+    with open(filename, 'w') as f:
+        # Header section
+        f.write("BASIS\n")
+        f.write(f"{basis}\n")
+        f.write(f"{molecule_name}\n")
+        f.write(f"using the {basis} basis\n")
+        f.write(f"Atomtypes={len(atom_groups)} Nosymmetry\n")
+        
+        # Write each atom type
+        for element, coords_list in atom_groups.items():
+            charge = atomic_charges.get(element, 1.0)  # Default to 1.0 if unknown
+            f.write(f"Charge={charge:.1f} Atoms={len(coords_list)}\n")
+            
+            for coords in coords_list:
+                x, y, z = coords
+                f.write(f"{element} {x:.10f} {y:.10f} {z:.10f}\n")
 
 
 class MoleculeData:
@@ -217,6 +438,8 @@ class DMDMWorkflow:
         vqe_patience: int = 10,
         vqe_threshold: float = 1e-10,
         verbose: int = 0,
+        casci_like: bool = False,
+        calculator: any = None,
     ):
         """
         Initialize the workflow.
@@ -232,15 +455,19 @@ class DMDMWorkflow:
             vqe_patience: Patience for VQE stopping criterion.
             vqe_threshold: Threshold for VQE convergence.
             verbose: Verbosity level.
+            casci_like: Run DMDM like CASCI.
+            calculator: qrunch calculator object for VQE
         """
+        self.casci_like = casci_like
         self.basis = basis
         self.molecule_list = molecule
         self.num_active_orbitals = num_active_orbitals
-        self.num_active_electrons = num_active_electrons
+        self.num_active_electrons = num_active_electrons 
         self.num_states = num_states
         self.mode = mode
         self.hartree_to_ev = 27.2114
         self.verbose = verbose
+        self.calculator = calculator
 
         # VQE Config
         self.vqe_max_iterations = vqe_max_iterations
@@ -353,8 +580,8 @@ class DMDMWorkflow:
 
         # Store results
         self._casscf_results = {
-            'exc_energies_ev': np.concatenate(([0.0], exc_energies[:self.num_states-1])),
-            'oscillator_strengths': np.concatenate(([0.0], osc_strengths[:self.num_states-1])),
+            'exc_energies_ev': exc_energies[:self.num_states-1],
+            'oscillator_strengths': osc_strengths[:self.num_states-1],
             'total_energies': rdm_total_energies,
             'e_cas': e_cas,
             'dmdm_obj': dmdm
@@ -454,8 +681,8 @@ class DMDMWorkflow:
         # Store results
         self._casscf_results = {
             'exc_energies_direct_ev': np.array(energies_direct),
-            'exc_energies_ev': np.concatenate(([0.0], exc_energies[:self.num_states-1])),
-            'oscillator_strengths': np.concatenate(([0.0], osc_strengths[:self.num_states-1])),
+            'exc_energies_ev': exc_energies[:self.num_states-1],
+            'oscillator_strengths': osc_strengths[:self.num_states-1],
             'total_energies': rdm_total_energies,
             'e_cas': e_cas,
             'dmdm_obj': dmdm
@@ -542,8 +769,8 @@ class DMDMWorkflow:
         osc_strengths = dmdm.get_oscillator_strength(MO_DM)
 
         self._casci_results = {
-            'exc_energies_ev': np.concatenate(([0.0], exc_energies[:self.num_states-1])),
-            'oscillator_strengths': np.concatenate(([0.0], osc_strengths[:self.num_states-1])),
+            'exc_energies_ev': exc_energies[:self.num_states-1],
+            'oscillator_strengths': osc_strengths[:self.num_states-1],
             'total_energies': rdm_total_energies,
             'e_cas': e_cas,
             'dmdm_obj': dmdm
@@ -584,20 +811,20 @@ class DMDMWorkflow:
         ground_state_problem = problem_builder.build_restricted(molecular_configuration)
 
         # 5. Setup Calculator (VQE)
-        calculator = (
-            qc.calculator_creator()
-            .vqe()
-            # .iterative()
-            .iterative_with_orbital_optimization()
-            .standard()
-            .with_options(options=qc.options.IterativeVqeOptions(max_iterations=self.vqe_max_iterations))
-            .choose_stopping_criterion()
-            .patience(patience=self.vqe_patience, threshold=self.vqe_threshold)
-            .create()
-        )
+        # calculator = (
+        #     qc.calculator_creator()
+        #     .vqe()
+        #     # .iterative()
+        #     .iterative_with_orbital_optimization()
+        #     .standard()
+        #     .with_options(options=qc.options.IterativeVqeOptions(max_iterations=self.vqe_max_iterations))
+        #     .choose_stopping_criterion()
+        #     .patience(patience=self.vqe_patience, threshold=self.vqe_threshold)
+        #     .create()
+        # )
 
         # 6. Run Calculation
-        result = calculator.calculate(ground_state_problem)
+        result = self.calculator.calculate(ground_state_problem)
 
         # 7. Extract Integrals & RDMs
         self.molecule = molecular_configuration.pyscf_molecule
@@ -610,8 +837,6 @@ class DMDMWorkflow:
         # Overwrite active space with problem integrals
         cas_slice = slice(num_inactive_orbs, num_inactive_orbs + self.num_active_orbitals)
         h_mo[cas_slice, cas_slice] = ground_state_problem.electronic_structure_integrals.one_body_core_hamiltonian.alpha_alpha
-        # g_mo[cas_slice, cas_slice, cas_slice, cas_slice] = ground_state_problem.electronic_structure_integrals.two_body_electron_repulsion_integrals.alpha_alpha # Simplified slicing logic
-        # Note: The original script did 4D slicing. Ensure shapes match.
         g_mo[cas_slice, cas_slice, cas_slice, cas_slice] = ground_state_problem.electronic_structure_integrals.two_body_electron_repulsion_integrals.alpha_alpha
 
         # 8. Calculate RDMs
@@ -623,22 +848,49 @@ class DMDMWorkflow:
         rdm3 = rdm_calculator.calculate_3_rdm(circuit=result.final_circuit, shots=None)
         rdm4 = rdm_calculator.calculate_4_rdm(circuit=result.final_circuit, shots=None)
 
-        # 9. DMDM Initialization
-        # Slice integrals for active space only (as per original script logic)
-        h_mo_act = h_mo[cas_slice, cas_slice]
-        g_mo_act = g_mo[cas_slice, cas_slice, cas_slice, cas_slice]
+        if self.casci_like == False:
+            dmdm = DMDM(
+                h_mo,
+                g_mo,
+                num_inactive_orbs,
+                self.num_active_orbitals,
+                num_virtual_orbs,
+                molecular_configuration.number_of_electrons(),
+                rdm1,
+                rdm2=rdm2,
+                rdm3=rdm3,
+                rdm4=rdm4
+            )
+            coefs = mo_coeffs
 
-        dmdm = DMDM(
-            h_mo_act, g_mo_act, 0, self.num_active_orbitals, 0, self.num_active_electrons,
-            rdm1, rdm2=rdm2, rdm3=rdm3, rdm4=rdm4
-        )
+        else:
+            # 9. DMDM Initialization
+            # Slice integrals for active space only (as per original script logic)
+            h_mo_act = h_mo[cas_slice, cas_slice]
+            g_mo_act = g_mo[cas_slice, cas_slice, cas_slice, cas_slice]
+
+            dmdm = DMDM(
+                h_mo_act,
+                g_mo_act,
+                0,
+                self.num_active_orbitals, 
+                0, 
+                self.num_active_electrons,
+                rdm1,
+                rdm2=rdm2, 
+                rdm3=rdm3,
+                rdm4=rdm4
+            )
+            coefs = mo_coeffs[:, cas_slice]
+
+
 
         # 10. Dipole & Oscillator Strengths
         x, y, z = self.molecule.intor('int1e_r', comp=3)
+
         # Note: Original script used coefs = mo_coeffs[:, :num_active_electrons] which seems odd for spatial orbitals
         # Usually we slice by active orbitals. Using the active slice here for consistency.
-        coefs = mo_coeffs[:, cas_slice] 
-        
+
         MO_DM = [
             one_electron_integral_transform(coefs, x),
             one_electron_integral_transform(coefs, y),
@@ -650,8 +902,8 @@ class DMDMWorkflow:
         osc_strengths = dmdm.get_oscillator_strength(MO_DM)
 
         self._vqe_results = {
-            'exc_energies_ev': np.concatenate(([0.0], exc_energies_ev[:self.num_states-1])),
-            'oscillator_strengths': np.concatenate(([0.0], osc_strengths[:self.num_states-1])),
+            'exc_energies_ev': exc_energies_ev[:self.num_states-1],
+            'oscillator_strengths': osc_strengths[:self.num_states-1],
             'dmdm_obj': dmdm
         }
         self._vqe_done = True
