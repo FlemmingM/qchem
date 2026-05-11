@@ -439,7 +439,7 @@ class DMDMWorkflow:
         vqe_threshold: float = 1e-10,
         verbose: int = 0,
         casci_like: bool = False,
-        calculator: any = None,
+        calculator: Any = None,
     ):
         """
         Initialize the workflow.
@@ -834,11 +834,6 @@ class DMDMWorkflow:
         h_mo = one_electron_integral_transform(mo_coeffs, self.molecule.intor("int1e_kin") + self.molecule.intor("int1e_nuc"))
         g_mo = two_electron_integral_transform(mo_coeffs, self.molecule.intor("int2e"))
 
-        # Overwrite active space with problem integrals
-        cas_slice = slice(num_inactive_orbs, num_inactive_orbs + self.num_active_orbitals)
-        h_mo[cas_slice, cas_slice] = ground_state_problem.electronic_structure_integrals.one_body_core_hamiltonian.alpha_alpha
-        g_mo[cas_slice, cas_slice, cas_slice, cas_slice] = ground_state_problem.electronic_structure_integrals.two_body_electron_repulsion_integrals.alpha_alpha
-
         # 8. Calculate RDMs
         estimator = qc.estimator_creator().memory_restricted().with_precise_defaults().create()
         rdm_calculator = ReducedDensityMatrixCalculator(estimator=estimator)
@@ -864,6 +859,11 @@ class DMDMWorkflow:
             coefs = mo_coeffs
 
         else:
+            # Overwrite active space with problem integrals
+            cas_slice = slice(num_inactive_orbs, num_inactive_orbs + self.num_active_orbitals)
+            h_mo[cas_slice, cas_slice] = ground_state_problem.electronic_structure_integrals.one_body_core_hamiltonian.alpha_alpha
+            g_mo[cas_slice, cas_slice, cas_slice, cas_slice] = ground_state_problem.electronic_structure_integrals.two_body_electron_repulsion_integrals.alpha_alpha
+
             # 9. DMDM Initialization
             # Slice integrals for active space only (as per original script logic)
             h_mo_act = h_mo[cas_slice, cas_slice]
@@ -900,6 +900,8 @@ class DMDMWorkflow:
         exc_energies_hartree = dmdm.get_excitation_energies()
         exc_energies_ev = exc_energies_hartree * self.hartree_to_ev
         osc_strengths = dmdm.get_oscillator_strength(MO_DM)
+        osc_strengths = osc_strengths[exc_energies_ev > 1e-8]
+        exc_energies_ev = exc_energies_ev[exc_energies_ev > 1e-8]
 
         self._vqe_results = {
             'exc_energies_ev': exc_energies_ev[:self.num_states-1],

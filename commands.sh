@@ -1,6 +1,6 @@
 # commands for experiments
 
-Comparison
+# Comparison
 
 # LiH
 python compare_vqe_casci_casscf.py LiH 2 2 4 -dal dalton_scripts/lih.dal -mol dalton_scripts/lih.mol -o results
