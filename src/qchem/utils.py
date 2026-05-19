@@ -768,12 +768,13 @@ class DMDMWorkflow:
         # Get Oscillator Strengths
         osc_strengths = dmdm.get_oscillator_strength(MO_DM)
 
+        self.casci_dmdm = dmdm
+
         self._casci_results = {
-            'exc_energies_ev': exc_energies[:self.num_states-1],
-            'oscillator_strengths': osc_strengths[:self.num_states-1],
+            'exc_energies_ev': exc_energies,
+            'oscillator_strengths': osc_strengths,
             'total_energies': rdm_total_energies,
             'e_cas': e_cas,
-            'dmdm_obj': dmdm
         }
         self._casci_done = True
         if self.verbose > 0:
@@ -787,7 +788,7 @@ class DMDMWorkflow:
     def run_quantum_vqe(self) -> Dict[str, Any]:
         """Run the VQE workflow using qrunch/qchem."""
 
-        # 3. Build Configuration
+        # Build Configuration
         molecular_configuration = qc.build_molecular_configuration(molecule=self.molecule_list, basis_set=self.basis)
         
         num_inactive_orbs = molecular_configuration.number_of_alpha_electrons() - (self.num_active_electrons // 2)
@@ -796,7 +797,7 @@ class DMDMWorkflow:
 
         print(f"  Inactive: {num_inactive_orbs}, Active: {self.num_active_orbitals}, Virtual: {num_virtual_orbs}")
 
-        # 4. Build Problem
+        # Build Problem
         problem_builder = (
             qc.problem_builder_creator()
             .ground_state()
@@ -810,23 +811,10 @@ class DMDMWorkflow:
         )
         ground_state_problem = problem_builder.build_restricted(molecular_configuration)
 
-        # 5. Setup Calculator (VQE)
-        # calculator = (
-        #     qc.calculator_creator()
-        #     .vqe()
-        #     # .iterative()
-        #     .iterative_with_orbital_optimization()
-        #     .standard()
-        #     .with_options(options=qc.options.IterativeVqeOptions(max_iterations=self.vqe_max_iterations))
-        #     .choose_stopping_criterion()
-        #     .patience(patience=self.vqe_patience, threshold=self.vqe_threshold)
-        #     .create()
-        # )
-
-        # 6. Run Calculation
+        # Run Calculation
         result = self.calculator.calculate(ground_state_problem)
 
-        # 7. Extract Integrals & RDMs
+        # Extract Integrals & RDMs
         self.molecule = molecular_configuration.pyscf_molecule
         mo_coeffs = problem_builder._restricted_builder._calculate_molecular_orbitals(molecular_configuration).alpha.coefficients
 
@@ -834,7 +822,7 @@ class DMDMWorkflow:
         h_mo = one_electron_integral_transform(mo_coeffs, self.molecule.intor("int1e_kin") + self.molecule.intor("int1e_nuc"))
         g_mo = two_electron_integral_transform(mo_coeffs, self.molecule.intor("int2e"))
 
-        # 8. Calculate RDMs
+        # Calculate RDMs
         estimator = qc.estimator_creator().memory_restricted().with_precise_defaults().create()
         rdm_calculator = ReducedDensityMatrixCalculator(estimator=estimator)
         
@@ -903,10 +891,11 @@ class DMDMWorkflow:
         osc_strengths = osc_strengths[exc_energies_ev > 1e-8]
         exc_energies_ev = exc_energies_ev[exc_energies_ev > 1e-8]
 
+        self.vqe_dmdm = dmdm
+
         self._vqe_results = {
-            'exc_energies_ev': exc_energies_ev[:self.num_states-1],
-            'oscillator_strengths': osc_strengths[:self.num_states-1],
-            'dmdm_obj': dmdm
+            'exc_energies_ev': exc_energies_ev,
+            'oscillator_strengths': osc_strengths,
         }
         self._vqe_done = True
         if self.verbose > 0:

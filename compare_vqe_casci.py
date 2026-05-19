@@ -5,6 +5,7 @@ Runs an experiment to compare VQE with CACI, CASSCF
 import argparse
 import subprocess
 import os
+import time
 from pathlib import Path
 import numpy as np
 import pandas as pd
@@ -21,20 +22,10 @@ from qchem.utils import  (
     write_dalton_molecule_file,
     parse_dalton_output,
     gaussian,
-    run_dalton,
-    )
+)
 
 from dmdm.interface import DMDM
 import qrunch as qc
-
-
-# qc.register_license_file("/home/flemming/Nextcloud/Cherimoya/training/master_cs/ms_project/code/qchem/license_fm.txt")
-
-
-
-
-# Path("my_folder").mkdir(parents=True, exist_ok=True)
-
 
 def main():
 
@@ -66,18 +57,6 @@ def main():
     )
 
     parser.add_argument(
-        "-dal",
-        type=str,
-        help="Dalton file path"
-    )
-
-    parser.add_argument(
-        "-mol",
-        type=str,
-        help="Molecule file path for dalton program"
-    )
-
-    parser.add_argument(
         "-o",
         type=str,
         help="Output folder path for experiment"
@@ -91,7 +70,10 @@ def main():
     )
 
     args = parser.parse_args()
-    dalton_out = args.mol.split("/")[-1].replace(".mol", "") + ".out"
+
+    print("Running VQE vs. CASCI comparison\n")
+    print(args)
+    print("\n")
 
     # Create output folder
     Path(f"{args.o}").mkdir(parents=True, exist_ok=True)
@@ -99,12 +81,6 @@ def main():
     # Change the global working directory
     os.chdir(args.o)
 
-    # Run CASSCF
-    run_dalton(
-        "../"+args.mol,
-        "../"+args.dal,
-        dalton_out
-    )
 
 
     # Get molecule
@@ -133,8 +109,17 @@ def main():
         calculator=calculator
     )
 
+    # take the time
+    start = time.time()
     workflow.run_quantum_vqe()
+    vqe_end = time.time() - start
+    print(f"VQE (cas-like) time (seconds): {vqe_end}")
+
+
+    start = time.time()
     workflow.run_classical_casci()
+    vqe_end = time.time() - start
+    print(f"CASCI time (seconds): {vqe_end}")
 
 
     calculator = (
@@ -161,27 +146,22 @@ def main():
         calculator=calculator
     )
 
+    start = time.time()
     workflow2.run_quantum_vqe()
-
-    # process CASSCF
-    df = parse_dalton_output(dalton_out)
+    vqe_end = time.time() - start
+    print(f"VQE time (seconds): {vqe_end}")
 
 
     # plot the data
     x = np.linspace(0, 30, 1000)
-    
 
     y = np.zeros_like(x)
-    for i in range(len(df)):
-        y += gaussian(
-            x,
-            df.loc[i, "Energy_eV"],
-            df.loc[i, "Oscillator_F_Total"]
-        )
-    plt.plot(x, y, label = "CASSCF", alpha=0.6)
-
-    y = np.zeros_like(x)
-    for i in range(len(workflow._casci_results["exc_energies_ev"])):
+    for i in range(
+        min(
+            len(workflow._casci_results["exc_energies_ev"]),
+            args.num_states
+            )
+        ):
         y += gaussian(
             x,
             workflow._casci_results["exc_energies_ev"][i],
@@ -191,7 +171,12 @@ def main():
     plt.plot(x, y, label = "CASCI", alpha=0.6)
 
     y = np.zeros_like(x)
-    for i in range(len(workflow._vqe_results["exc_energies_ev"])):
+    for i in range(
+        min(
+            len(workflow._vqe_results["exc_energies_ev"]),
+            args.num_states
+            )
+        ):
         y += gaussian(
             x,
             workflow._vqe_results["exc_energies_ev"][i],
@@ -201,7 +186,12 @@ def main():
     plt.plot(x, y, label = "VQE + DMDM (active space)", alpha=0.8, linestyle="--")
 
     y = np.zeros_like(x)
-    for i in range(len(workflow2._vqe_results["exc_energies_ev"])):
+    for i in range(
+        min(
+            len(workflow2._vqe_results["exc_energies_ev"]),
+            args.num_states
+            )
+        ):
         y += gaussian(
             x,
             workflow2._vqe_results["exc_energies_ev"][i],
@@ -220,7 +210,24 @@ def main():
     plt.xlabel("Energy (eV)")
     plt.ylabel("Intensity (Oscillator Strength)")
     plt.savefig(f"{args.molecule}_uv-vis_spectrum_{args.b}_CAS({args.num_active_orbitals}_{args.num_active_electrons})_states_{args.num_states}.png")
-    # plt.show()
 
+    # Save the results as dfs
+    pd.DataFrame(
+        workflow._vqe_results
+    ).to_csv(
+        "vqe_casci_like.csv"
+    )
+
+    pd.DataFrame(
+        workflow._vqe_results
+    ).to_csv(
+        "casci.csv"
+    )
+
+    pd.DataFrame(
+        workflow2._vqe_results
+    ).to_csv(
+        "vqe.csv"
+    )
 if __name__ == "__main__":
     main()

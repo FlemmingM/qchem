@@ -144,3 +144,12 @@ Thumbs.db
 # .env.local
 # secrets/
 # *.key
+
+
+# project specific
+*/*.gz*
+*.gz*
+*.out*
+dalton_files/
+dalton_scripts/
+*.png
