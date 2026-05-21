@@ -2,6 +2,7 @@
 """
 
 import os
+import time
 from pathlib import Path
 import subprocess
 import numpy as np
@@ -15,9 +16,6 @@ from pyscf import gto, scf, fci, mp, mcscf, ao2mo
 import qrunch as qc
 from qrunch.chemistry.reduced_density_matrices.reduced_density_matrix_calculator import ReducedDensityMatrixCalculator
 from dmdm.interface import DMDM
-
-
-
 
 
 def run_dalton(
@@ -698,8 +696,10 @@ class DMDMWorkflow:
     # CLASSICAL (CASCI) PATH
     # ==========================
 
-    def run_classical_casci(self) -> Dict[str, Any]:
+    def run_classical_casci_dmdm(self) -> Dict[str, Any]:
         """Run the classical CASCI workflow using PySCF."""
+
+        start = time.time()
 
         # 2. RHF & MP2
         mf = scf.RHF(self.molecule).run()
@@ -768,13 +768,126 @@ class DMDMWorkflow:
         # Get Oscillator Strengths
         osc_strengths = dmdm.get_oscillator_strength(MO_DM)
 
-        self.casci_dmdm = dmdm
+        self.casci_dmdm_time = time.time() - start
+        self.casci_dmdm_dmdm = dmdm
 
-        self._casci_results = {
+        self._casci_dmdm_results = {
             'exc_energies_ev': exc_energies,
             'oscillator_strengths': osc_strengths,
-            'total_energies': rdm_total_energies,
-            'e_cas': e_cas,
+            # 'total_energies': rdm_total_energies,
+            # 'e_cas': e_cas,
+        }
+        self._casci_done = True
+        if self.verbose > 0:
+            print("Done with CASCI computations...\n")
+        return self._casci_dmdm_results
+
+
+    def run_classical_casci(self) -> Dict[str, Any]:
+        """Run the classical CASCI workflow using PySCF."""
+
+        start = time.time()
+
+        # 2. RHF & MP2
+        mf = scf.RHF(self.molecule).run()
+        # mp2 = mp.MP2(mf).run()
+        # _, natorbs = mcscf.addons.make_natural_orbitals(mp2)
+
+        # 3. CASCI
+        mc = mcscf.CASCI(mf, ncas=self.num_active_orbitals, nelecas=self.num_active_electrons)
+        # mc = mcscf.CASSCF(mf, ncas=self.num_active_orbitals, nelecas=self.num_active_electrons)
+        mc.fcisolver.nroots = self.num_states
+        # mc.mo_coeff = natorbs # Optional: use natural orbitals
+        
+        e_tot, e_cas, ci, mo, mo_energy = mc.kernel()
+        
+        # 4. Integrals
+        h_mo, _ = mc.get_h1eff()
+        g_mo = mc.get_h2eff()
+        g_mo = ao2mo.restore(1, g_mo, self.num_active_orbitals)
+
+        # 5. RDM Reconstruction & DMDM
+        rdm_active_energies = []
+        rdm_data_list = []
+
+        for i in range(self.num_states):
+            ci_vec = ci[i]
+            rdm1, rdm2, rdm3, rdm4 = mc.fcisolver.make_rdm1234(ci_vec, self.num_active_orbitals, self.num_active_electrons)
+            
+            e1 = np.einsum('pq,pq', h_mo, rdm1)
+            e2 = 0.5 * np.einsum('pqrs,pqrs', g_mo, rdm2)
+            rdm_active_energies.append(e1 + e2)
+            rdm_data_list.append((rdm1, rdm2, rdm3, rdm4))
+
+        rdm_active_energies = np.array(rdm_active_energies)
+        E_core = e_tot[0] - e_cas[0]
+        rdm_total_energies = rdm_active_energies + E_core
+
+
+        # Dipole Integrals
+        x_ao, y_ao, z_ao = self.molecule.intor('int1e_r', comp=3)
+        cas_slice = slice(mc.ncore, mc.ncore + self.num_active_orbitals)
+        C_cas = mo[:, cas_slice]
+        
+        x_cas = one_electron_integral_transform(C_cas, x_ao)
+        y_cas = one_electron_integral_transform(C_cas, y_ao)
+        z_cas = one_electron_integral_transform(C_cas, z_ao)
+        MO_DM = [x_cas, y_cas, z_cas]
+
+        
+        dipole_mos = [x_cas, y_cas, z_cas] # Shape: (3, ncas, ncas)
+
+        # Compute Transition Dipole Moments and Oscillator Strengths
+        exc_energies_ev = []
+        osc_strengths = []
+
+        # Ground state index is 0
+        gs_ci = ci[0]
+        gs_energy = rdm_total_energies[0]
+
+        for i in range(1, self.num_states):
+            excited_ci = ci[i]
+            excited_energy = rdm_total_energies[i]
+
+            # Excitation Energy (in Hartree)
+            delta_e_hartree = excited_energy - gs_energy
+            delta_e_ev = delta_e_hartree * self.hartree_to_ev
+            exc_energies_ev.append(delta_e_ev)
+
+            # Transition Dipole Moment: <Psi_gs | mu | Psi_ex>
+            # We need the transition 1-RDM between state 0 and state i
+            # PySCF fcisolver.make_rdm1_trans(rdm1, rdm2, ...) is not standard for CASCI directly 
+            # but we can use the generic FCISolver method for transition RDMs if available,
+            # or compute it manually via the CI vectors.
+
+            # Method: Use mc.fcisolver.trans_rdm1 if available, otherwise manual contraction.
+            # In PySCF, for CASCI, we can compute the transition 1-RDM manually:
+            # <Psi_i | E_pq | Psi_j> where E_pq is the spin-free excitation operator.
+
+            # This returns the spin-summed 1-RDM for transition between state 0 and i
+            # Arguments: (ci1, ci2, ncas, nelec)
+            trans_rdm1 = mc.fcisolver.trans_rdm1(gs_ci, excited_ci, self.num_active_orbitals, self.num_active_electrons)
+
+
+            # Contract transition RDM with dipole integrals
+            # mu_ij = sum_{pq} trans_rdm1[pq] * mu_pq
+            mu_x = np.einsum('pq,pq', trans_rdm1, x_cas)
+            mu_y = np.einsum('pq,pq', trans_rdm1, y_cas)
+            mu_z = np.einsum('pq,pq', trans_rdm1, z_cas)
+
+            mu_sq = mu_x**2 + mu_y**2 + mu_z**2
+
+            # Oscillator Strength Formula: f = (2/3) * Delta_E * |mu|^2
+            # Delta_E in Hartree, mu in Bohr (atomic units)
+            f_val = (2.0 / 3.0) * delta_e_hartree * mu_sq
+            osc_strengths.append(f_val)
+
+        self.casci_time = time.time() - start
+        self._casci_results = {
+            'exc_energies_ev': np.array(exc_energies_ev),
+            'oscillator_strengths': np.array(osc_strengths),
+            # 'total_energies': rdm_total_energies,
+            # 'e_cas': e_cas,
         }
         self._casci_done = True
         if self.verbose > 0:
@@ -787,6 +900,8 @@ class DMDMWorkflow:
 
     def run_quantum_vqe(self) -> Dict[str, Any]:
         """Run the VQE workflow using qrunch/qchem."""
+
+        start = time.time()
 
         # Build Configuration
         molecular_configuration = qc.build_molecular_configuration(molecule=self.molecule_list, basis_set=self.basis)
@@ -891,6 +1006,7 @@ class DMDMWorkflow:
         osc_strengths = osc_strengths[exc_energies_ev > 1e-8]
         exc_energies_ev = exc_energies_ev[exc_energies_ev > 1e-8]
 
+        self.vqe_time = time.time() - start
         self.vqe_dmdm = dmdm
 
         self._vqe_results = {
