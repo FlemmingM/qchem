@@ -16,4 +16,4 @@
 #BSUB -e vqe_casci_compare_%J.err
 
 
-~/micromamba/envs/qrunch/bin/python compare_vqe_casci.py LiH 19 4 10 -o "vqe_casci_compare_lih_${LSB_JOBID}"
+~/micromamba/envs/qrunch/bin/python compare_vqe_casci.py LiH 6 4 4 -b STO-3G -o "vqe_casci_compare_lih_${LSB_JOBID}"

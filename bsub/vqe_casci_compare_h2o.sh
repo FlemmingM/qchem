@@ -16,4 +16,4 @@
 #BSUB -e vqe_casci_compare_%J.err
 
 
-~/micromamba/envs/qrunch/bin/python compare_vqe_casci.py H2O 24 10 10 -o "vqe_casci_compare_${LSB_JOBID}"
+~/micromamba/envs/qrunch/bin/python compare_vqe_casci.py H2O 7 10 10 -b STO-3G -o "vqe_casci_compare_${LSB_JOBID}"
