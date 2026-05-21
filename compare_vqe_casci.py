@@ -157,6 +157,45 @@ def main():
     vqe_end = time.time() - start
     print(f"VQE time (seconds): {vqe_end}")
 
+        # Save the results as dfs
+    pd.DataFrame(
+        workflow._vqe_results
+    ).to_csv(
+        "vqe_casci_like.csv"
+    )
+
+    pd.DataFrame(
+        workflow._casci_results
+    ).to_csv(
+        "casci.csv"
+    )
+
+    pd.DataFrame(
+        workflow._casci_dmdm_results
+    ).to_csv(
+        "casci_dmdm.csv"
+    )
+
+    pd.DataFrame(
+        workflow2._vqe_results
+    ).to_csv(
+        "vqe.csv"
+    )
+
+    # save the compute times
+    pd.DataFrame(
+        {
+            "method": ["vqe_as", "vqe", "casci", "casci_dmdm"],
+            "time": [
+                workflow.vqe_time,
+                workflow2.vqe_time,
+                workflow.casci_time,
+                workflow.casci_dmdm_time
+            ]
+        }
+    ).to_csv(
+        "compute_times.csv"
+    )
 
     # plot the data
     x = np.linspace(0, 30, 1000)
@@ -212,45 +251,7 @@ def main():
     plt.ylabel("Intensity (Oscillator Strength)")
     plt.savefig(f"{args.molecule}_uv-vis_spectrum_{args.b}_CAS({args.num_active_orbitals}_{args.num_active_electrons})_states_{args.num_states}.png")
 
-    # Save the results as dfs
-    pd.DataFrame(
-        workflow._vqe_results
-    ).to_csv(
-        "vqe_casci_like.csv"
-    )
 
-    pd.DataFrame(
-        workflow._casci_results
-    ).to_csv(
-        "casci.csv"
-    )
-
-    pd.DataFrame(
-        workflow._casci_dmdm_results
-    ).to_csv(
-        "casci_dmdm.csv"
-    )
-
-    pd.DataFrame(
-        workflow2._vqe_results
-    ).to_csv(
-        "vqe.csv"
-    )
-
-    # save the compute times
-    pd.DataFrame(
-        {
-            "method": ["vqe_as", "vqe", "casci", "casci_dmdm"],
-            "time": [
-                workflow.vqe_time,
-                workflow2.vqe_time,
-                workflow.casci_time,
-                workflow.casci_dmdm_time
-            ]
-        }
-    ).to_csv(
-        "compute_times.csv"
-    )
 
 if __name__ == "__main__":
     main()
