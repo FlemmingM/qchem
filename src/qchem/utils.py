@@ -16,6 +16,111 @@ from pyscf import gto, scf, fci, mp, mcscf, ao2mo
 import qrunch as qc
 from qrunch.chemistry.reduced_density_matrices.reduced_density_matrix_calculator import ReducedDensityMatrixCalculator
 from dmdm.interface import DMDM
+from typing import Dict, Any, Optional
+from qiskit_aer.noise import NoiseModel
+from math import comb
+
+
+def get_fci_params(molecule_coords: list, basis: str, charge=0, multiplicity=1):
+    """
+    Calculate the number of electrons and spatial orbitals for a Full CI calculation
+    given a molecule's coordinates and basis set.
+
+    Parameters
+    ----------
+    molecule_coords : str or list
+        Atom coordinates in PySCF format (e.g., "O 0 0 0; H 0 0 1.2" or list of tuples).
+    basis : str
+        Basis set name (e.g., 'sto-3g', '6-31g', 'cc-pvdz').
+    charge : int, optional
+        Total molecular charge (default 0).
+    multiplicity : int, optional
+        Spin multiplicity (2S+1) (default 1 for singlet).
+
+    Returns
+    -------
+    dict
+        A dictionary containing:
+        - 'n_electrons': Total number of electrons.
+        - 'n_orbitals': Total number of spatial orbitals.
+        - 'n_spin_orbitals': Total number of spin orbitals (2 * n_orbitals).
+        - 'charge': The input charge.
+        - 'multiplicity': The input multiplicity.
+        
+    Raises
+    ------
+    RuntimeError
+        If the SCF calculation fails to converge.
+    """
+    # 1. Define the Molecule
+    mol = gto.M(
+        atom=molecule_coords,
+        basis=basis,
+        charge=charge,
+        spin=multiplicity - 1, # PySCF uses spin (2S) not multiplicity
+        verbose=0 # Suppress output
+    )
+
+    # 2. Run Restricted Hartree-Fock (RHF) to get orbital count
+    # Note: We run RHF just to get the basis set dimensions. 
+    # If the system is open-shell, UHF might be needed, but orbital count is usually the same.
+    try:
+        mf = scf.RHF(mol).run()
+    except Exception as e:
+        # Fallback to UHF if RHF fails (common for open shells)
+        mf = scf.UHF(mol).run()
+
+    # 3. Extract parameters
+    # mo_coeff shape is (n_basis, n_orbitals)
+    n_spatial_orbitals = mf.mo_coeff.shape[1]
+    n_electrons = sum(mol.nelec) # Returns tuple (alpha, beta), sum gives total
+    n_spin_orbitals = n_spatial_orbitals * 2
+
+    return {
+        "n_electrons": n_electrons,
+        "n_orbitals": n_spatial_orbitals,
+        "n_spin_orbitals": n_spin_orbitals,
+        "charge": charge,
+        "multiplicity": multiplicity
+    }
+
+
+def count_singlet_states(n, m):
+    """
+    Calculate the number of singlet CSFs for a CAS(n, m) active space.
+    
+    Args:
+        n (int): Number of active electrons (must be even).
+        m (int): Number of active spatial orbitals.
+        
+    Returns:
+        int: The number of singlet states.
+        
+    Raises:
+        ValueError: If n is odd or n > 2*m.
+    """
+    if n < 0 or m < 0 or n > 2 * m or n % 2 != 0:
+        raise ValueError("Invalid CAS(n, m) parameters for singlet calculation.")
+    
+    k = n // 2
+    return (comb(m + 1, k) * comb(m + 1, k + 1)) // (m + 1)
+
+
+def spectral_similarity(y1, y2, x):
+    """
+    Normalized spectral similarity (cosine analog):
+    
+        ∫ S1·S2 dE  /  √(∫ S1² dE · ∫ S2² dE)
+    
+    Returns value in [0, 1]:
+        1.0 = identical spectra
+        0.0 = completely disjoint
+    """
+    num = np.trapezoid(y1 * y2, x)
+    den = np.sqrt(np.trapezoid(y1**2, x) * np.trapezoid(y2**2, x))
+    if den == 0:
+        return 0.0
+    return num / den
 
 
 def run_dalton(
@@ -135,6 +240,13 @@ def parse_dalton_output(filename: str):
 
 def gaussian(x: np.array, energy: float, oscillator_strength: float, sigma: float=0.2):
     return oscillator_strength * np.exp(-(x - energy)**2 / (2 * sigma**2))
+
+def build_spectrum(energies, oscillator_strengths, x, sigma=0.2):
+    """Build a Gaussian-broadened spectrum from discrete peaks."""
+    y = np.zeros_like(x)
+    for e, osc in zip(energies, oscillator_strengths):
+        y += gaussian(x, e, osc, sigma)
+    return y
 
 
 def scale_molecule(molecule: list, scale_factor: float, basis: str) -> gto.M:
@@ -273,74 +385,30 @@ class MoleculeData:
             ("H", 0.0, 0.7955612117, -0.4640237459),
             ("H", 0.0, -0.7955612117, -0.4640237459),
         ],
-        "minimal": {
-            "num_active_orbs": 4,
-            "num_active_alpha_electrons": 2
-        },
-        "larger": {
-            "num_active_orbs": 6,
-            "num_active_alpha_electrons": 3
-        }
     },
     "LiH": {
         "coords": [
             ("Li", 0.0, 0.0, 0.0),
             ("H", 0.0, 0.0, 1.595),
         ],
-        "minimal": {
-            "num_active_orbs": 2,
-            "num_active_alpha_electrons": 1
-        },
-        "larger": {
-            "num_active_orbs": 4,
-            "num_active_alpha_electrons": 2
-        },
-        "full": {
-            "num_active_orbs": 6,
-            "num_active_alpha_electrons": 2
-        }
     },
     "HF": {
         "coords": [
             ("H", 0.0, 0.0, 0.0),
             ("F", 0.0, 0.0, 0.917),
         ],
-        "minimal": {
-            "num_active_orbs": 2,
-            "num_active_alpha_electrons": 1
-        },
-        "larger": {
-            "num_active_orbs": 6,
-            "num_active_alpha_electrons": 3
-        }
     },
     "N2": {
         "coords": [
             ("N", 0.0, 0.0, -0.550),
             ("N", 0.0, 0.0, 0.550),
         ],
-        "minimal": {
-            "num_active_orbs": 6,
-            "num_active_alpha_electrons": 3
-        },
-        "larger": {
-            "num_active_orbs": 10,
-            "num_active_alpha_electrons": 5
-        }
     },
     "CO": {
         "coords": [
             ("C", 0.0, 0.0, 0.0),
             ("O", 0.0, 0.0, 1.128),
         ],
-        "minimal": {
-            "num_active_orbs": 4,
-            "num_active_alpha_electrons": 2
-        },
-        "larger": {
-            "num_active_orbs": 8,
-            "num_active_alpha_electrons": 4
-        }
     },
     "CH4": {
         "coords": [
@@ -350,14 +418,6 @@ class MoleculeData:
             ("H", 0.817, -0.471, -0.362),
             ("H", -0.817, -0.471, -0.362),
         ],
-        "minimal": {
-            "num_active_orbs": 4,
-            "num_active_alpha_electrons": 2
-        },
-        "larger": {
-            "num_active_orbs": 8,
-            "num_active_alpha_electrons": 4
-        }
     },
     "NH3": {
         "coords": [
@@ -366,14 +426,6 @@ class MoleculeData:
             ("H", 0.812, -0.469, -0.342),
             ("H", -0.812, -0.469, -0.342),
         ],
-        "minimal": {
-            "num_active_orbs": 4,
-            "num_active_alpha_electrons": 2
-        },
-        "larger": {
-            "num_active_orbs": 8,
-            "num_active_alpha_electrons": 4
-        }
     },
     "BeH2": {
         "coords": [
@@ -381,28 +433,26 @@ class MoleculeData:
             ("H", 0.0, 0.0, 1.330),
             ("H", 0.0, 0.0, -1.330),
         ],
-        "minimal": {
-            "num_active_orbs": 2,
-            "num_active_alpha_electrons": 1
-        },
-        "larger": {
-            "num_active_orbs": 4,
-            "num_active_alpha_electrons": 2
-        }
     },
     "F2": {
         "coords": [
             ("F", 0.0, 0.0, -0.700),
             ("F", 0.0, 0.0, 0.700),
         ],
-        "minimal": {
-            "num_active_orbs": 4,
-            "num_active_alpha_electrons": 2
-        },
-        "larger": {
-            "num_active_orbs": 8,
-            "num_active_alpha_electrons": 4
-        }
+    },
+    "R-methyloxirane": {
+        "coords": [
+            ("O",  0.8171, -0.7825, -0.2447),
+            ("C", -1.5018,  0.1019, -0.1473),
+            ("H", -1.3989,  0.3323, -1.2066),
+            ("H", -2.0652, -0.8262, -0.0524),
+            ("H", -2.0715,  0.8983,  0.3329),
+            ("C", -0.1488, -0.0393,  0.4879),
+            ("H", -0.1505, -0.2633,  1.5506),
+            ("C",  1.0387,  0.6105, -0.0580),
+            ("H",  0.9518,  1.2157, -0.9531),
+            ("H",  1.8684,  0.8649,  0.5908),
+        ],
     },
 }
 
@@ -432,12 +482,13 @@ class DMDMWorkflow:
         mode: CalculationMode = CalculationMode.BOTH,
         scale_factor: float = 1.0,
         # VQE Specific Inputs
-        vqe_max_iterations: int = 1000,
         vqe_patience: int = 10,
         vqe_threshold: float = 1e-10,
         verbose: int = 0,
         casci_like: bool = False,
         calculator: Any = None,
+        shots: int = None,
+        mp2: bool = False,
     ):
         """
         Initialize the workflow.
@@ -449,7 +500,6 @@ class DMDMWorkflow:
             num_active_electrons: Number of active electrons.
             num_states: Number of roots/states.
             mode: Whether to run Classical, Quantum, or Both.
-            vqe_max_iterations: Max iterations for VQE optimizer.
             vqe_patience: Patience for VQE stopping criterion.
             vqe_threshold: Threshold for VQE convergence.
             verbose: Verbosity level.
@@ -466,9 +516,9 @@ class DMDMWorkflow:
         self.hartree_to_ev = 27.2114
         self.verbose = verbose
         self.calculator = calculator
+        self.mp2 = mp2
 
         # VQE Config
-        self.vqe_max_iterations = vqe_max_iterations
         self.vqe_patience = vqe_patience
         self.vqe_threshold = vqe_threshold
 
@@ -496,6 +546,8 @@ class DMDMWorkflow:
             self.scale_factor,
             self.basis
         )
+
+        self.shots = shots
 
 
     def run_classical_casscf_average(self) -> Dict[str, Any]:
@@ -703,15 +755,14 @@ class DMDMWorkflow:
 
         # 2. RHF & MP2
         mf = scf.RHF(self.molecule).run()
-        # mp2 = mp.MP2(mf).run()
-        # _, natorbs = mcscf.addons.make_natural_orbitals(mp2)
 
         # 3. CASCI
         mc = mcscf.CASCI(mf, ncas=self.num_active_orbitals, nelecas=self.num_active_electrons)
-        # mc = mcscf.CASSCF(mf, ncas=self.num_active_orbitals, nelecas=self.num_active_electrons)
-        mc.fcisolver.nroots = self.num_states
-        # mc.mo_coeff = natorbs # Optional: use natural orbitals
-        
+        # mc.fcisolver.nroots = self.num_states
+        # if self.mp2:
+        #     mp2 = mp.MP2(mf).run()
+        #     _, natorbs = mcscf.addons.make_natural_orbitals(mp2)
+        #     mc.mo_coeff = natorbs # Optional: use natural orbitals        
         e_tot, e_cas, ci, mo, mo_energy = mc.kernel()
         
         # 4. Integrals
@@ -719,22 +770,24 @@ class DMDMWorkflow:
         g_mo = mc.get_h2eff()
         g_mo = ao2mo.restore(1, g_mo, self.num_active_orbitals)
 
+        rdm1, rdm2, rdm3, rdm4 = mc.fcisolver.make_rdm1234(ci, self.num_active_orbitals, self.num_active_electrons)
+
         # 5. RDM Reconstruction & DMDM
-        rdm_active_energies = []
-        rdm_data_list = []
+        # rdm_active_energies = []
+        # rdm_data_list = []
 
-        for i in range(self.num_states):
-            ci_vec = ci[i]
-            rdm1, rdm2, rdm3, rdm4 = mc.fcisolver.make_rdm1234(ci_vec, self.num_active_orbitals, self.num_active_electrons)
+        # for i in range(self.num_states):
+        #     ci_vec = ci[i]
+        #     rdm1, rdm2, rdm3, rdm4 = mc.fcisolver.make_rdm1234(ci_vec, self.num_active_orbitals, self.num_active_electrons)
             
-            e1 = np.einsum('pq,pq', h_mo, rdm1)
-            e2 = 0.5 * np.einsum('pqrs,pqrs', g_mo, rdm2)
-            rdm_active_energies.append(e1 + e2)
-            rdm_data_list.append((rdm1, rdm2, rdm3, rdm4))
+        #     e1 = np.einsum('pq,pq', h_mo, rdm1)
+        #     e2 = 0.5 * np.einsum('pqrs,pqrs', g_mo, rdm2)
+        #     rdm_active_energies.append(e1 + e2)
+        #     rdm_data_list.append((rdm1, rdm2, rdm3, rdm4))
 
-        rdm_active_energies = np.array(rdm_active_energies)
-        E_core = e_tot[0] - e_cas[0]
-        rdm_total_energies = rdm_active_energies + E_core
+        # rdm_active_energies = np.array(rdm_active_energies)
+        # E_core = e_tot[0] - e_cas[0]
+        # rdm_total_energies = rdm_active_energies + E_core
 
 
         # Dipole Integrals
@@ -748,7 +801,7 @@ class DMDMWorkflow:
         MO_DM = [x_cas, y_cas, z_cas]
 
         # Initialize DMDM
-        gs_rdm = rdm_data_list[0]
+        # gs_rdm = rdm_data_list[0]
         dmdm = DMDM(
             h_mo,
             g_mo,
@@ -756,10 +809,10 @@ class DMDMWorkflow:
             self.num_active_orbitals,
             0,
             self.num_active_electrons,
-            gs_rdm[0],
-            rdm2=gs_rdm[1],
-            rdm3=gs_rdm[2],
-            rdm4=gs_rdm[3]
+            rdm1,
+            rdm2=rdm2,
+            rdm3=rdm3,
+            rdm4=rdm4
         )
 
         # Get energies
@@ -772,8 +825,8 @@ class DMDMWorkflow:
         self.casci_dmdm_dmdm = dmdm
 
         self._casci_dmdm_results = {
-            'exc_energies_ev': exc_energies,
-            'oscillator_strengths': osc_strengths,
+            'exc_energies_ev': exc_energies[:self.num_states],
+            'oscillator_strengths': osc_strengths[:self.num_states],
             # 'total_energies': rdm_total_energies,
             # 'e_cas': e_cas,
         }
@@ -790,14 +843,14 @@ class DMDMWorkflow:
 
         # 2. RHF & MP2
         mf = scf.RHF(self.molecule).run()
-        # mp2 = mp.MP2(mf).run()
-        # _, natorbs = mcscf.addons.make_natural_orbitals(mp2)
 
         # 3. CASCI
         mc = mcscf.CASCI(mf, ncas=self.num_active_orbitals, nelecas=self.num_active_electrons)
-        # mc = mcscf.CASSCF(mf, ncas=self.num_active_orbitals, nelecas=self.num_active_electrons)
         mc.fcisolver.nroots = self.num_states
-        # mc.mo_coeff = natorbs # Optional: use natural orbitals
+        if self.mp2:
+            mp2 = mp.MP2(mf).run()
+            _, natorbs = mcscf.addons.make_natural_orbitals(mp2)
+            mc.mo_coeff = natorbs # Optional: use natural orbitals
         
         e_tot, e_cas, ci, mo, mo_energy = mc.kernel()
         
@@ -808,16 +861,14 @@ class DMDMWorkflow:
 
         # 5. RDM Reconstruction & DMDM
         rdm_active_energies = []
-        rdm_data_list = []
 
         for i in range(self.num_states):
             ci_vec = ci[i]
-            rdm1, rdm2, rdm3, rdm4 = mc.fcisolver.make_rdm1234(ci_vec, self.num_active_orbitals, self.num_active_electrons)
+            rdm1, rdm2 = mc.fcisolver.make_rdm12(ci_vec, self.num_active_orbitals, self.num_active_electrons)
             
             e1 = np.einsum('pq,pq', h_mo, rdm1)
             e2 = 0.5 * np.einsum('pqrs,pqrs', g_mo, rdm2)
             rdm_active_energies.append(e1 + e2)
-            rdm_data_list.append((rdm1, rdm2, rdm3, rdm4))
 
         rdm_active_energies = np.array(rdm_active_energies)
         E_core = e_tot[0] - e_cas[0]
@@ -898,12 +949,12 @@ class DMDMWorkflow:
     # QUANTUM (VQE) PATH
     # ==========================
 
-    def run_quantum_vqe(self) -> Dict[str, Any]:
-        """Run the VQE workflow using qrunch/qchem."""
+    def run_quantum_vqe(self, use_noisy_backend: bool = False, noise_model: Optional[Any] = None) -> Dict[str, Any]:
+        """Run the VQE workflow using qrunch/qchem with optional noise simulation."""
 
         start = time.time()
 
-        # Build Configuration
+        # 1. Build Configuration (Unchanged)
         molecular_configuration = qc.build_molecular_configuration(molecule=self.molecule_list, basis_set=self.basis)
         
         num_inactive_orbs = molecular_configuration.number_of_alpha_electrons() - (self.num_active_electrons // 2)
@@ -926,26 +977,88 @@ class DMDMWorkflow:
         )
         ground_state_problem = problem_builder.build_restricted(molecular_configuration)
 
-        # Run Calculation
+        # 3. Run Calculation (Unchanged)
         result = self.calculator.calculate(ground_state_problem)
 
-        # Extract Integrals & RDMs
+        # 4. Extract Integrals (Unchanged)
         self.molecule = molecular_configuration.pyscf_molecule
         mo_coeffs = problem_builder._restricted_builder._calculate_molecular_orbitals(molecular_configuration).alpha.coefficients
 
-        # Transform AO to MO
         h_mo = one_electron_integral_transform(mo_coeffs, self.molecule.intor("int1e_kin") + self.molecule.intor("int1e_nuc"))
         g_mo = two_electron_integral_transform(mo_coeffs, self.molecule.intor("int2e"))
 
-        # Calculate RDMs
-        estimator = qc.estimator_creator().memory_restricted().with_precise_defaults().create()
-        rdm_calculator = ReducedDensityMatrixCalculator(estimator=estimator)
-        
-        rdm1 = rdm_calculator.calculate_1_rdm(circuit=result.final_circuit, shots=None)
-        rdm2 = rdm_calculator.calculate_2_rdm(circuit=result.final_circuit, shots=None)
-        rdm3 = rdm_calculator.calculate_3_rdm(circuit=result.final_circuit, shots=None)
-        rdm4 = rdm_calculator.calculate_4_rdm(circuit=result.final_circuit, shots=None)
+        # ---------------------------------------------------------
+        # 5. ESTIMATOR CREATION WITH NOISE SUPPORT (MODIFIED)
+        # ---------------------------------------------------------
 
+        # Note: If using noisy backend, shots MUST be set to an integer > 0 for Monte Carlo sampling
+        # If shots is None, the noisy simulator might fail or default to exact (defeating the purpose)
+        effective_shots = self.shots if use_noisy_backend else (self.shots if self.shots else None)
+        
+        if use_noisy_backend and effective_shots is None:
+            effective_shots = 4096 # Default to a reasonable shot count if user didn't specify
+            print(f"  [WARN] Noisy backend requires shots. Defaulting to {effective_shots}.")
+
+        
+        if use_noisy_backend:
+            print("  [INFO] Configuring Noisy Backend...")
+            
+            # Determine the device data to simulate
+            # If noise_model is provided, we assume it's a Qiskit NoiseModel or Kvantify DeviceData
+            # If None, we might default to a generic noise profile or raise an error depending on your needs.
+            # For this example, we assume 'noise_model' is a valid device data object for qrunch.
+            device_data = noise_model 
+            
+            # If you are using a raw Qiskit NoiseModel, you might need to convert it 
+            # or use the 'local_memory_restricted' builder which accepts device data directly.
+            # Based on docs: "device_to_simulate can be None ... or one you create from another backend"
+            
+            estimator_noisy = (
+                qc.estimator_creator()
+                .backend()
+                .choose_backend()
+                # .local_memory_restricted(device_to_simulate=device_data) # <-- Key Change
+                .local_qiskit_aer(method="density_matrix")
+                .create()
+            )
+
+            estimator_exact = (
+                qc.estimator_creator()
+                .memory_restricted() # Default noiseless
+                .with_precise_defaults()
+                .create()
+            )
+
+
+            print(f"  [INFO] Noisy backend active. Shots: {self.shots}")
+            
+            rdm_calculator_noisy = ReducedDensityMatrixCalculator(estimator=estimator_noisy)
+            rdm_calculator_exact = ReducedDensityMatrixCalculator(estimator=estimator_exact)
+
+            rdm1 = rdm_calculator_noisy.calculate_1_rdm(circuit=result.final_circuit, shots=effective_shots)
+            rdm2 = rdm_calculator_noisy.calculate_2_rdm(circuit=result.final_circuit, shots=effective_shots)
+            rdm3 = rdm_calculator_exact.calculate_3_rdm(circuit=result.final_circuit, shots=None) # The noisy backend does not work with higher rdms
+            rdm4 = rdm_calculator_exact.calculate_4_rdm(circuit=result.final_circuit, shots=None)
+    
+        else:
+            print("  [INFO] Configuring Ideal (Noiseless) Backend...")
+            estimator = (
+                qc.estimator_creator()
+                .memory_restricted() # Default noiseless
+                .with_precise_defaults()
+                .create()
+            )
+
+            rdm_calculator = ReducedDensityMatrixCalculator(estimator=estimator)
+
+            rdm1 = rdm_calculator.calculate_1_rdm(circuit=result.final_circuit, shots=None)
+            rdm2 = rdm_calculator.calculate_2_rdm(circuit=result.final_circuit, shots=None)
+            rdm3 = rdm_calculator.calculate_3_rdm(circuit=result.final_circuit, shots=None) # The noisy backend does not work with higher rdms
+            rdm4 = rdm_calculator.calculate_4_rdm(circuit=result.final_circuit, shots=None)
+
+        self.vqe_rdms = [rdm1, rdm2, rdm3, rdm4]
+
+        # 6. DMDM Calculation (Unchanged logic, just using the new RDMs)
         if self.casci_like == False:
             dmdm = DMDM(
                 h_mo,
@@ -960,21 +1073,15 @@ class DMDMWorkflow:
                 rdm4=rdm4
             )
             coefs = mo_coeffs
-
         else:
-            # Overwrite active space with problem integrals
             cas_slice = slice(num_inactive_orbs, num_inactive_orbs + self.num_active_orbitals)
             h_mo[cas_slice, cas_slice] = ground_state_problem.electronic_structure_integrals.one_body_core_hamiltonian.alpha_alpha
             g_mo[cas_slice, cas_slice, cas_slice, cas_slice] = ground_state_problem.electronic_structure_integrals.two_body_electron_repulsion_integrals.alpha_alpha
 
-            # 9. DMDM Initialization
-            # Slice integrals for active space only (as per original script logic)
-            h_mo_act = h_mo[cas_slice, cas_slice]
-            g_mo_act = g_mo[cas_slice, cas_slice, cas_slice, cas_slice]
 
             dmdm = DMDM(
-                h_mo_act,
-                g_mo_act,
+                h_mo[cas_slice, cas_slice],
+                g_mo[cas_slice, cas_slice, cas_slice, cas_slice],
                 0,
                 self.num_active_orbitals, 
                 0, 
@@ -986,14 +1093,8 @@ class DMDMWorkflow:
             )
             coefs = mo_coeffs[:, cas_slice]
 
-
-
-        # 10. Dipole & Oscillator Strengths
+        # 7. Dipole & Oscillator Strengths (Unchanged)
         x, y, z = self.molecule.intor('int1e_r', comp=3)
-
-        # Note: Original script used coefs = mo_coeffs[:, :num_active_electrons] which seems odd for spatial orbitals
-        # Usually we slice by active orbitals. Using the active slice here for consistency.
-
         MO_DM = [
             one_electron_integral_transform(coefs, x),
             one_electron_integral_transform(coefs, y),
@@ -1010,12 +1111,14 @@ class DMDMWorkflow:
         self.vqe_dmdm = dmdm
 
         self._vqe_results = {
-            'exc_energies_ev': exc_energies_ev,
-            'oscillator_strengths': osc_strengths,
+            'exc_energies_ev': exc_energies_ev[:self.num_states],
+            'oscillator_strengths': osc_strengths[:self.num_states],
         }
         self._vqe_done = True
+        
         if self.verbose > 0:
             print("Done with VQE computations...\n")
+            
         return self._vqe_results
 
     # ==========================
@@ -1025,6 +1128,7 @@ class DMDMWorkflow:
     def plot_spectrum(
         self,
         show_casci: bool = True,
+        show_casci_dmdm: bool = True,
         show_casscf: bool = True,
         show_vqe: bool = True,
         sigma: float = 0.2,
@@ -1054,6 +1158,16 @@ class DMDMWorkflow:
             ax.plot(x, spectrum, label="CASCI (Smooth)", color='green', alpha=0.8)
             ax.vlines(data['exc_energies_ev'], 0, data['oscillator_strengths'], color='blue', alpha=0.4, linewidth=1)
             legend_items.append("CASCI")
+
+        if show_casci_dmdm and self._casci_dmdm_results:
+            data = self._casci_dmdm_results
+            spectrum = np.zeros_like(x)
+            for e, f in zip(data['exc_energies_ev'], data['oscillator_strengths']):
+                spectrum += f * np.exp(-(x - e)**2 / (2 * sigma**2))
+            
+            ax.plot(x, spectrum, label="CASCI + DMDM (Smooth)", color='green', alpha=0.8)
+            ax.vlines(data['exc_energies_ev'], 0, data['oscillator_strengths'], color='blue', alpha=0.4, linewidth=1)
+            legend_items.append("CASCI DMDM")
         
         if show_casscf and self._casscf_results:
             data = self._casscf_results

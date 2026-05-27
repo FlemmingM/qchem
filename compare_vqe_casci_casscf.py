@@ -5,6 +5,7 @@ Runs an experiment to compare VQE with CACI, CASSCF
 import argparse
 import subprocess
 import os
+import time
 from pathlib import Path
 import numpy as np
 import pandas as pd
@@ -27,15 +28,6 @@ from qchem.utils import  (
 from dmdm.interface import DMDM
 import qrunch as qc
 
-
-# qc.register_license_file("/home/flemming/Nextcloud/Cherimoya/training/master_cs/ms_project/code/qchem/license_fm.txt")
-
-
-
-
-# Path("my_folder").mkdir(parents=True, exist_ok=True)
-
-
 def main():
 
 
@@ -48,15 +40,15 @@ def main():
     )
 
     parser.add_argument(
-        "num_active_orbitals",
-        type=int,
-        help="num_active_orbitals"
-    )
-
-    parser.add_argument(
         "num_active_electrons",
         type=int,
         help="num_active_electrons"
+    )
+
+    parser.add_argument(
+        "num_active_orbitals",
+        type=int,
+        help="num_active_orbitals"
     )
 
     parser.add_argument(
@@ -219,7 +211,7 @@ def main():
     plt.legend()
     plt.xlabel("Energy (eV)")
     plt.ylabel("Intensity (Oscillator Strength)")
-    plt.savefig(f"{args.molecule}_uv-vis_spectrum_{args.b}_CAS({args.num_active_orbitals}_{args.num_active_electrons})_states_{args.num_states}.png")
+    plt.savefig(f"{args.molecule}_uv-vis_spectrum_{args.b}_CAS({args.num_active_electrons}_{args.num_active_orbitals})_states_{args.num_states}.png")
     # plt.show()
 
 if __name__ == "__main__":

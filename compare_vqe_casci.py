@@ -5,6 +5,7 @@ Runs an experiment to compare VQE with CACI, CASSCF
 import argparse
 import subprocess
 import os
+import tracemalloc
 import time
 from pathlib import Path
 import numpy as np
@@ -39,15 +40,15 @@ def main():
     )
 
     parser.add_argument(
-        "num_active_orbitals",
-        type=int,
-        help="num_active_orbitals"
-    )
-
-    parser.add_argument(
         "num_active_electrons",
         type=int,
         help="num_active_electrons"
+    )
+
+    parser.add_argument(
+        "num_active_orbitals",
+        type=int,
+        help="num_active_orbitals"
     )
 
     parser.add_argument(
@@ -104,27 +105,38 @@ def main():
         num_active_electrons=args.num_active_electrons,
         num_states=args.num_states,
         mode=CalculationMode.BOTH,
-        vqe_max_iterations=500,
         casci_like=True,
         calculator=calculator
     )
 
     # take the time
+    tracemalloc.start()
     start = time.time()
     workflow.run_quantum_vqe()
     vqe_end = time.time() - start
+    current, peak = tracemalloc.get_traced_memory()
+    vqe_as_memory = peak / 1024 / 1024
+    tracemalloc.stop()
     print(f"VQE (cas-like) time (seconds): {vqe_end}")
 
 
+    tracemalloc.start()
     start = time.time()
     workflow.run_classical_casci()
     vqe_end = time.time() - start
+    current, peak = tracemalloc.get_traced_memory()
+    casci_memory = peak / 1024 / 1024
+    tracemalloc.stop()
     print(f"CASCI time (seconds): {vqe_end}")
 
 
+    tracemalloc.start()
     start = time.time()
     workflow.run_classical_casci_dmdm()
     vqe_end = time.time() - start
+    current, peak = tracemalloc.get_traced_memory()
+    casci_dmdm_memory = peak / 1024 / 1024
+    tracemalloc.stop()
     print(f"CASCI time (dmdm) (seconds): {vqe_end}")
 
 
@@ -147,39 +159,42 @@ def main():
         num_active_electrons=args.num_active_electrons,
         num_states=args.num_states,
         mode=CalculationMode.BOTH,
-        vqe_max_iterations=500,
         casci_like=False,
         calculator=calculator
     )
 
+    tracemalloc.start()
     start = time.time()
     workflow2.run_quantum_vqe()
     vqe_end = time.time() - start
+    current, peak = tracemalloc.get_traced_memory()
+    vqe_memory = peak / 1024 / 1024
+    tracemalloc.stop()
     print(f"VQE time (seconds): {vqe_end}")
 
         # Save the results as dfs
     pd.DataFrame(
         workflow._vqe_results
     ).to_csv(
-        "vqe_casci_like.csv"
+        f"vqe_casci_like_{args.molecule}_{args.b}_CAS({args.num_active_electrons}_{args.num_active_orbitals})_states_{args.num_states}.csv"
     )
 
     pd.DataFrame(
         workflow._casci_results
     ).to_csv(
-        "casci.csv"
+        f"casci_{args.molecule}_{args.b}_CAS({args.num_active_electrons}_{args.num_active_orbitals})_states_{args.num_states}.csv"
     )
 
     pd.DataFrame(
         workflow._casci_dmdm_results
     ).to_csv(
-        "casci_dmdm.csv"
+        f"casci_dmdm_{args.molecule}_{args.b}_CAS({args.num_active_electrons}_{args.num_active_orbitals})_states_{args.num_states}.csv"
     )
 
     pd.DataFrame(
         workflow2._vqe_results
     ).to_csv(
-        "vqe.csv"
+        f"vqe_{args.molecule}_{args.b}_CAS({args.num_active_electrons}_{args.num_active_orbitals})_states_{args.num_states}.csv"
     )
 
     # save the compute times
@@ -191,17 +206,28 @@ def main():
                 workflow2.vqe_time,
                 workflow.casci_time,
                 workflow.casci_dmdm_time
+            ],
+            "memory_mb" : [
+                vqe_as_memory,
+                vqe_memory,
+                casci_memory,
+                casci_dmdm_memory
             ]
         }
     ).to_csv(
-        "compute_times.csv"
+        f"compute_times_{args.molecule}_{args.b}_CAS({args.num_active_electrons}_{args.num_active_orbitals})_states_{args.num_states}.csv"
     )
 
     # plot the data
-    x = np.linspace(0, 30, 1000)
+    x = np.linspace(0, 40, 1000)
 
     y = np.zeros_like(x)
-    for i in range(args.num_states-1):
+    for i in range(
+        min(
+            args.num_states-1,
+            len(workflow._casci_results["exc_energies_ev"])
+        )
+    ):
         y += gaussian(
             x,
             workflow._casci_results["exc_energies_ev"][i],
@@ -211,7 +237,12 @@ def main():
     plt.plot(x, y, label = "CASCI", alpha=0.6)
 
     y = np.zeros_like(x)
-    for i in range(args.num_states-1):
+    for i in range(
+        min(
+            args.num_states-1,
+            len(workflow._casci_dmdm_results["exc_energies_ev"])
+        )
+    ):
         y += gaussian(
             x,
             workflow._casci_dmdm_results["exc_energies_ev"][i],
@@ -221,7 +252,12 @@ def main():
     plt.plot(x, y, label = "CASCI + DMDM", alpha=0.6)
 
     y = np.zeros_like(x)
-    for i in range(args.num_states-1):
+    for i in range(
+        min(
+            args.num_states-1,
+            len(workflow._vqe_results["exc_energies_ev"])
+        )
+    ):
         y += gaussian(
             x,
             workflow._vqe_results["exc_energies_ev"][i],
@@ -231,7 +267,12 @@ def main():
     plt.plot(x, y, label = "VQE + DMDM (active space)", alpha=0.8, linestyle="--")
 
     y = np.zeros_like(x)
-    for i in range(args.num_states-1):
+    for i in range(
+        min(
+            args.num_states-1,
+            len(workflow2._vqe_results["exc_energies_ev"])
+        )
+    ):
         y += gaussian(
             x,
             workflow2._vqe_results["exc_energies_ev"][i],
@@ -249,7 +290,7 @@ def main():
     plt.legend()
     plt.xlabel("Energy (eV)")
     plt.ylabel("Intensity (Oscillator Strength)")
-    plt.savefig(f"{args.molecule}_uv-vis_spectrum_{args.b}_CAS({args.num_active_orbitals}_{args.num_active_electrons})_states_{args.num_states}.png")
+    plt.savefig(f"{args.molecule}_uv-vis_spectrum_{args.b}_CAS({args.num_active_electrons}_{args.num_active_orbitals})_states_{args.num_states}.png")
 
 
 
