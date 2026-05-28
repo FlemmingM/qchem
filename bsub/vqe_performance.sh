@@ -26,15 +26,15 @@ lscpu
 ~/micromamba/envs/qrunch/bin/python compare_vqe_methods.py LiH 4 6 40 -b STO-3G -o compare_vqe_methods
 
 ## H2O
-~/micromamba/envs/qrunch/bin/python H2O 2 2 3 -b STO-3G -o compare_vqe_methods
-~/micromamba/envs/qrunch/bin/python H2O 4 4 20 -b STO-3G -o compare_vqe_methods
-~/micromamba/envs/qrunch/bin/python H2O 6 5 40 -b STO-3G -o compare_vqe_methods
-~/micromamba/envs/qrunch/bin/python H2O 8 6 40 -b STO-3G -o compare_vqe_methods
-~/micromamba/envs/qrunch/bin/python H2O 10 7 40 -b STO-3G -o compare_vqe_methods
+~/micromamba/envs/qrunch/bin/python compare_vqe_methods.py H2O 2 2 3 -b STO-3G -o compare_vqe_methods
+~/micromamba/envs/qrunch/bin/python compare_vqe_methods.py H2O 4 4 20 -b STO-3G -o compare_vqe_methods
+~/micromamba/envs/qrunch/bin/python compare_vqe_methods.py H2O 6 5 40 -b STO-3G -o compare_vqe_methods
+~/micromamba/envs/qrunch/bin/python compare_vqe_methods.py H2O 8 6 40 -b STO-3G -o compare_vqe_methods
+~/micromamba/envs/qrunch/bin/python compare_vqe_methods.py H2O 10 7 40 -b STO-3G -o compare_vqe_methods
 
 ## BeH2
-~/micromamba/envs/qrunch/bin/python BeH2 4 4 20 -b STO-3G -o compare_vqe_methods
-~/micromamba/envs/qrunch/bin/python BeH2 6 7 40 -b STO-3G -o compare_vqe_methods
+~/micromamba/envs/qrunch/bin/python compare_vqe_methods.py BeH2 4 4 20 -b STO-3G -o compare_vqe_methods
+~/micromamba/envs/qrunch/bin/python compare_vqe_methods.py BeH2 6 7 40 -b STO-3G -o compare_vqe_methods
 
 ## R-methyloxirane
-~/micromamba/envs/qrunch/bin/python R-methyloxirane 6 6 40 -b STO-3G -o compare_vqe_methods
+~/micromamba/envs/qrunch/bin/python compare_vqe_methods.py R-methyloxirane 6 6 40 -b STO-3G -o compare_vqe_methods
