@@ -4,7 +4,7 @@
 ### job name
 #BSUB -J vqe_performance
 ### number of cores
-#BSUB -n 48
+#BSUB -n 24
 ### -- specify that the cores must be on the same host -- 
 #BSUB -R "span[hosts=1]"
 ### -- specify that we need 4GB of memory per core/slot -- 
