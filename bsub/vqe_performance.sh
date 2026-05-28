@@ -21,9 +21,9 @@ lscpu
 
 # Run each molecule: minimal and Full CI
 
-## LiH
-~/micromamba/envs/qrunch/bin/python compare_vqe_methods.py LiH 2 2 3 -b STO-3G -o compare_vqe_methods
-~/micromamba/envs/qrunch/bin/python compare_vqe_methods.py LiH 4 6 40 -b STO-3G -o compare_vqe_methods
+## LiH - Done
+# ~/micromamba/envs/qrunch/bin/python compare_vqe_methods.py LiH 2 2 3 -b STO-3G -o compare_vqe_methods
+# ~/micromamba/envs/qrunch/bin/python compare_vqe_methods.py LiH 4 6 40 -b STO-3G -o compare_vqe_methods
 
 ## H2O
 ~/micromamba/envs/qrunch/bin/python compare_vqe_methods.py H2O 2 2 3 -b STO-3G -o compare_vqe_methods
