@@ -20,6 +20,175 @@ from typing import Dict, Any, Optional
 from qiskit_aer.noise import NoiseModel
 from math import comb
 
+def match_top_k_weighted_rmse(ref_energies, ref_osc, pred_energies, k=10, tol=2.0, unmatched_penalty=5.0):
+    """
+    Compares only the first K lowest-energy reference states.
+    """
+    ref_E = np.array(ref_energies)
+    ref_f = np.array(ref_osc)
+    pred_E = np.array(pred_energies)
+    
+    # Sort reference by energy
+    sort_idx = np.argsort(ref_E)
+    ref_E_sorted = ref_E[sort_idx]
+    ref_f_sorted = ref_f[sort_idx]
+    
+    # TRUNCATE to top K
+    ref_E_topk = ref_E_sorted[:k]
+    ref_f_topk = ref_f_sorted[:k]
+    
+    # Now run the greedy matching on this truncated list
+    # (Reuse the logic from the previous function, but with ref_E_topk)
+    n_ref = len(ref_E_topk)
+    n_pred = len(pred_E)
+    used_pred = np.zeros(n_pred, dtype=bool)
+    
+    errors = []
+    weights = []
+    
+    for i in range(n_ref):
+        e_ref = ref_E_topk[i]
+        f_ref = ref_f_topk[i]
+        
+        best_dist = np.inf
+        best_j = -1
+        
+        for j in range(n_pred):
+            if used_pred[j]: continue
+            dist = abs(pred_E[j] - e_ref)
+            if dist < best_dist:
+                best_dist = dist
+                best_j = j
+        
+        if best_dist <= tol:
+            used_pred[best_j] = True
+            errors.append(best_dist)
+            weights.append(f_ref)
+        else:
+            # Penalty for missing a top-K state
+            errors.append(unmatched_penalty)
+            weights.append(f_ref)
+            
+    if np.sum(weights) == 0:
+        return 0.0
+    
+    return np.sqrt(np.sum(weights * np.array(errors)**2) / np.sum(weights))
+
+        
+
+
+def match_and_weighted_rmse(ref_energies, ref_osc, pred_energies, tol=1.0, unmatched_penalty=10.0):
+    """
+    Matches reference and predicted states by energy proximity and calculates 
+    oscillator-strength-weighted RMSE.
+    
+    Handles degeneracy by greedily matching the closest available prediction.
+    
+    Args:
+        ref_energies (list): Reference energies (sorted or unsorted).
+        ref_osc (list): Reference oscillator strengths.
+        pred_energies (list): Predicted energies.
+        tol (float): Maximum energy difference (eV) to consider a match.
+        unmatched_penalty (float): Error value assigned if a reference state has no match.
+        
+    Returns:
+        float: Weighted RMSE.
+        dict: Details of the matching (for debugging).
+    """
+    ref_E = np.array(ref_energies)
+    ref_f = np.array(ref_osc)
+    pred_E = np.array(pred_energies)
+    
+    n_ref = len(ref_E)
+    n_pred = len(pred_E)
+    
+    # Sort reference by energy to process low-lying states first
+    sort_idx = np.argsort(ref_E)
+    ref_E_sorted = ref_E[sort_idx]
+    ref_f_sorted = ref_f[sort_idx]
+    
+    # Track which predicted states have been used
+    used_pred_indices = np.zeros(n_pred, dtype=bool)
+    
+    matched_errors = []
+    matched_weights = []
+    unmatched_count = 0
+    
+    details = {
+        "matches": [],
+        "unmatched_ref_indices": []
+    }
+    
+    for i in range(n_ref):
+        e_ref = ref_E_sorted[i]
+        f_ref = ref_f_sorted[i]
+        
+        # Find the closest unused prediction
+        best_dist = np.inf
+        best_j = -1
+        
+        for j in range(n_pred):
+            if used_pred_indices[j]:
+                continue
+            
+            dist = abs(pred_E[j] - e_ref)
+            if dist < best_dist:
+                best_dist = dist
+                best_j = j
+        
+        # Check if match is within tolerance
+        if best_dist <= tol:
+            used_pred_indices[best_j] = True
+            err = best_dist
+            matched_errors.append(err)
+            matched_weights.append(f_ref)
+            
+            details["matches"].append({
+                "ref_idx": i, "ref_E": e_ref, "pred_idx": best_j, "pred_E": pred_E[best_j], "dist": best_dist
+            })
+        else:
+            # No match found within tolerance
+            unmatched_count += 1
+            details["unmatched_ref_indices"].append(i)
+            # Assign penalty error
+            matched_errors.append(unmatched_penalty)
+            matched_weights.append(f_ref) # Still weight by the missing state's importance
+            
+    # Calculate Weighted RMSE
+    errors = np.array(matched_errors)
+    weights = np.array(matched_weights)
+    
+    if np.sum(weights) == 0:
+        return 0.0, details
+        
+    weighted_mse = np.sum(weights * errors**2) / np.sum(weights)
+    weighted_rmse = np.sqrt(weighted_mse)
+    
+    return weighted_rmse, details
+
+
+def weighted_rmse(pred_energies, ref_energies, oscillator_strengths):
+    """
+    Calculate oscillator-strength-weighted RMSE between predicted and reference energies.
+    
+    Peaks with higher oscillator strength contribute more to the error,
+    reflecting their experimental visibility.
+    
+    Args:
+        pred_energies (array-like): Predicted excitation energies.
+        ref_energies (array-like): Reference (e.g., CASCI) excitation energies.
+        oscillator_strengths (array-like): Oscillator strengths (weights).
+        
+    Returns:
+        float: Weighted RMSE value.
+    """
+    pred = np.asarray(pred_energies)
+    ref = np.asarray(ref_energies)
+    w = np.asarray(oscillator_strengths)
+    
+    squared_errors = (pred - ref) ** 2
+    return np.sqrt(np.sum(w * squared_errors)) 
+
 
 def get_fci_params(molecule_coords: list, basis: str, charge=0, multiplicity=1):
     """
@@ -824,9 +993,20 @@ class DMDMWorkflow:
         self.casci_dmdm_time = time.time() - start
         self.casci_dmdm_dmdm = dmdm
 
+        x, y, z = molecule.intor('int1e_cg_irxp', comp=3)
+
+        MO_MG = [
+            one_electron_integral_transform(coefs, x),
+            one_electron_integral_transform(coefs, y),
+            one_electron_integral_transform(coefs, z)
+        ]
+
+        self.rotational_strengths = dmdm.get_rotational_strength(MO_DM, MO_MG)
+
         self._casci_dmdm_results = {
             'exc_energies_ev': exc_energies[:self.num_states],
             'oscillator_strengths': osc_strengths[:self.num_states],
+            "rotational_strengths": self.rotational_strengths[:self.num_states]
             # 'total_energies': rdm_total_energies,
             # 'e_cas': e_cas,
         }
@@ -1110,9 +1290,20 @@ class DMDMWorkflow:
         self.vqe_time = time.time() - start
         self.vqe_dmdm = dmdm
 
+        x, y, z = molecule.intor('int1e_cg_irxp', comp=3)
+
+        MO_MG = [
+            one_electron_integral_transform(coefs, x),
+            one_electron_integral_transform(coefs, y),
+            one_electron_integral_transform(coefs, z)
+        ]
+
+        self.rotational_strengths = dmdm.get_rotational_strength(MO_DM, MO_MG)
+
         self._vqe_results = {
             'exc_energies_ev': exc_energies_ev[:self.num_states],
             'oscillator_strengths': osc_strengths[:self.num_states],
+            "rotational_strengths": self.rotational_strengths[:self.num_states]
         }
         self._vqe_done = True
         
