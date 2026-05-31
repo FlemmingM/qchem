@@ -253,6 +253,7 @@ def main():
 
             methods.append("casci")
             times.append(workflow.casci_time)
+            times_method.append(workflow.casci_time)
 
             # Plot
             spectrum_casci = build_spectrum(
