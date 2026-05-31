@@ -993,7 +993,7 @@ class DMDMWorkflow:
         self.casci_dmdm_time = time.time() - start
         self.casci_dmdm_dmdm = dmdm
 
-        x, y, z = molecule.intor('int1e_cg_irxp', comp=3)
+        x, y, z = self.molecule.intor('int1e_cg_irxp', comp=3)
 
         MO_MG = [
             one_electron_integral_transform(coefs, x),
@@ -1290,7 +1290,7 @@ class DMDMWorkflow:
         self.vqe_time = time.time() - start
         self.vqe_dmdm = dmdm
 
-        x, y, z = molecule.intor('int1e_cg_irxp', comp=3)
+        x, y, z = self.molecule.intor('int1e_cg_irxp', comp=3)
 
         MO_MG = [
             one_electron_integral_transform(coefs, x),
