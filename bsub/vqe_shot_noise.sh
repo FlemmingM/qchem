@@ -21,5 +21,5 @@ lscpu
 
 
 ## H2O
-~/micromamba/envs/qrunch/bin/python compare_vqe_shot_noise.py H2O 4 4 20 -b STO-3G -r 10 -o vqe_shot_noise
+~/micromamba/envs/qrunch/bin/python compare_vqe_shot_noise.py H2O 4 4 20 -b cc-pvdz -r 10 -o vqe_shot_noise
 
