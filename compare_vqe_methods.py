@@ -210,6 +210,7 @@ def main():
 
     methods = []
     times = []
+    times_method = []
     memory_footprints = []
 
     # for the plot
