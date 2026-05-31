@@ -985,6 +985,7 @@ class DMDMWorkflow:
         z_cas = one_electron_integral_transform(C_cas, z_ao)
         MO_DM = [x_cas, y_cas, z_cas]
 
+        self.casci_dmdm_time_method = time.time() - start
         # Initialize DMDM
         # gs_rdm = rdm_data_list[0]
         dmdm = DMDM(
@@ -1253,6 +1254,7 @@ class DMDMWorkflow:
             rdm4 = rdm_calculator.calculate_4_rdm(circuit=result.final_circuit, shots=None)
 
         self.vqe_rdms = [rdm1, rdm2, rdm3, rdm4]
+        self.vqe_time_method = time.time() - start
 
         # 6. DMDM Calculation (Unchanged logic, just using the new RDMs)
         if self.casci_like == False:

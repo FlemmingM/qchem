@@ -280,6 +280,7 @@ def main():
 
             methods.append("casci_dmdm")
             times.append(workflow.casci_dmdm_time)
+            times_method.append(workflow.casci_dmdm_time_method)
 
             # Plot
             spectrum_casci_dmdm = build_spectrum(
@@ -309,6 +310,7 @@ def main():
         # Add times
         methods.append(f"{name}")
         times.append(workflow.vqe_time)
+        times_method.append(workflow.vqe_time_method)
 
         plot_name = name.replace("_", " ").upper()
 
@@ -341,6 +343,7 @@ def main():
         {
             "method": methods,
             "time": times,
+            "time_method": times_method,
             "memory_mb" : memory_footprints,
             "spectral_similarity": spectral_similarities,
             "basis": [f"{args.b}_CAS({args.num_active_electrons}_{args.num_active_orbitals})_states_{args.num_states}"] * len(methods),
