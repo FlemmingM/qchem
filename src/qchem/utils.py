@@ -623,6 +623,22 @@ class MoleculeData:
             ("H",  1.8684,  0.8649,  0.5908),
         ],
     },
+    "benzene": {
+        "coords":[
+            ("C", -1.210, 0.698, 0.004),
+            ("C", -1.210, -0.698, 0.000),
+            ("C", 0.000, -1.397, -0.003),
+            ("C", 1.210, -0.698, -0.003),
+            ("C", 1.210, 0.698, 0.000),
+            ("C", 0.000, 1.397, -0.003),
+            ("H", -2.164, 1.249, 0.007),
+            ("H", -2.164, -1.249, 0.007),
+            ("H", 0.000, -2.500, -0.005),
+            ("H", 2.164, -1.249, -0.006),
+            ("H", 2.164, 1.249, 0.000),
+            ("H", 0.000, 2.500, 0.000),
+        ]
+    }
 }
 
 
@@ -996,9 +1012,9 @@ class DMDMWorkflow:
         x, y, z = self.molecule.intor('int1e_cg_irxp', comp=3)
 
         MO_MG = [
-            one_electron_integral_transform(coefs, x),
-            one_electron_integral_transform(coefs, y),
-            one_electron_integral_transform(coefs, z)
+            one_electron_integral_transform(C_cas, x),
+            one_electron_integral_transform(C_cas, y),
+            one_electron_integral_transform(C_cas, z)
         ]
 
         self.rotational_strengths = dmdm.get_rotational_strength(MO_DM, MO_MG)
