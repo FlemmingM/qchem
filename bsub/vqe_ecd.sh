@@ -23,4 +23,4 @@ lscpu
 
 
 ## R-methyloxirane
-~/micromamba/envs/qrunch/bin/python compare_vqe_methods.py R-methyloxirane 6 6 40 -b cc-pvdz -o compare_vqe_methods
+~/micromamba/envs/qrunch/bin/python compare_vqe_methods_fast.py R-methyloxirane 6 6 40 -b cc-pvdz -o compare_vqe_methods
