@@ -10,10 +10,10 @@
 ### -- specify that we need 4GB of memory per core/slot -- 
 #BSUB -R "rusage[mem=8GB]"
 ### -- set walltime limit: hh:mm -- 
-#BSUB -W 48:00
+#BSUB -W 72:00
 ### Output file and error file
-#BSUB -o vqe_performance.out
-#BSUB -e vqe_performance.err
+#BSUB -o vqe_performance_h2o.out
+#BSUB -e vqe_performance_h2o.err
 
 
 # Get used CPU
@@ -24,5 +24,13 @@ lscpu
 ## H2O
 # ~/micromamba/envs/qrunch/bin/python compare_vqe_methods.py H2O 4 4 20 -b cc-pvdz -o compare_vqe_methods
 
-~/micromamba/envs/qrunch/bin/python compare_vqe_methods.py H2O 6 5 40 -b cc-pvdz -o compare_vqe_methods
-~/micromamba/envs/qrunch/bin/python compare_vqe_methods.py H2O 8 6 40 -b cc-pvdz -o compare_vqe_methods
+# ~/micromamba/envs/qrunch/bin/python compare_vqe_methods.py H2O 6 5 40 -b cc-pvdz -o compare_vqe_methods
+# ~/micromamba/envs/qrunch/bin/python compare_vqe_methods.py H2O 8 6 40 -b cc-pvdz -o compare_vqe_methods
+# ~/micromamba/envs/qrunch/bin/python compare_vqe_methods.py H2O 10 7 40 -b cc-pvdz -o compare_vqe_methods
+
+## H2O
+~/micromamba/envs/qrunch/bin/python compare_vqe_methods.py H2O 2 2 3 -b STO-3G -o compare_vqe_methods_h20
+~/micromamba/envs/qrunch/bin/python compare_vqe_methods.py H2O 4 4 20 -b STO-3G -o compare_vqe_methods_h20
+~/micromamba/envs/qrunch/bin/python compare_vqe_methods.py H2O 6 5 40 -b STO-3G -o compare_vqe_methods_h20
+~/micromamba/envs/qrunch/bin/python compare_vqe_methods.py H2O 8 6 40 -b STO-3G -o compare_vqe_methods_h20
+~/micromamba/envs/qrunch/bin/python compare_vqe_methods.py H2O 10 7 40 -b STO-3G -o compare_vqe_methods_h20
