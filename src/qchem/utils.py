@@ -666,7 +666,7 @@ class DMDMWorkflow:
         num_active_electrons: int,
         num_states: int,
         mode: CalculationMode = CalculationMode.BOTH,
-        scale_factor: float = 1.0,
+        scale_factor: float = None,
         # VQE Specific Inputs
         vqe_patience: int = 10,
         vqe_threshold: float = 1e-10,
@@ -727,11 +727,17 @@ class DMDMWorkflow:
         self.scale_factor = scale_factor
 
         # Initial molecule setup
-        self.molecule = scale_molecule(
-            self.molecule_list,
-            self.scale_factor,
-            self.basis
-        )
+        if scale_factor is not None:
+            self.molecule = scale_molecule(
+                self.molecule_list,
+                self.scale_factor,
+                self.basis
+            )
+        else:
+            self.molecule = gto.M(
+                atom=molecule,
+                basis=basis
+            )
 
         self.shots = shots
 
@@ -969,6 +975,7 @@ class DMDMWorkflow:
         MO_DM = [x_cas, y_cas, z_cas]
 
         current, peak = tracemalloc.get_traced_memory()
+        tracemalloc.reset_peak()
         self.mem_method = peak / 1024 / 1024
         self.casci_dmdm_time_method = time.time() - start
         # Initialize DMDM
@@ -993,6 +1000,7 @@ class DMDMWorkflow:
         osc_strengths = dmdm.get_oscillator_strength(MO_DM)
 
         current, peak = tracemalloc.get_traced_memory()
+        tracemalloc.reset_peak()
         self.mem_total = peak / 1024 / 1024
         tracemalloc.stop()
 
@@ -1121,6 +1129,7 @@ class DMDMWorkflow:
             osc_strengths.append(f_val)
         
         current, peak = tracemalloc.get_traced_memory()
+        tracemalloc.reset_peak()
         self.mem_method = peak / 1024 / 1024
         self.mem_total = peak / 1024 / 1024
         tracemalloc.stop()
@@ -1250,6 +1259,7 @@ class DMDMWorkflow:
         self.vqe_rdms = [rdm1, rdm2, rdm3, rdm4]
 
         current, peak = tracemalloc.get_traced_memory()
+        tracemalloc.reset_peak()
         self.mem_method = peak / 1024 / 1024
         self.vqe_time_method = time.time() - start
 
@@ -1304,6 +1314,7 @@ class DMDMWorkflow:
 
 
         current, peak = tracemalloc.get_traced_memory()
+        tracemalloc.reset_peak()
         self.mem_total = peak / 1024 / 1024
         tracemalloc.stop()
 
