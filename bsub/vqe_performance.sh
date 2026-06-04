@@ -4,13 +4,13 @@
 ### job name
 #BSUB -J vqe_performance
 ### number of cores
-#BSUB -n 24
+#BSUB -n 1
 ### -- specify that the cores must be on the same host -- 
 #BSUB -R "span[hosts=1]"
 ### -- specify that we need 4GB of memory per core/slot -- 
-#BSUB -R "rusage[mem=8GB]"
+#BSUB -R "rusage[mem=10GB]"
 ### -- set walltime limit: hh:mm -- 
-#BSUB -W 48:00
+#BSUB -W 72:00
 ### Output file and error file
 #BSUB -o vqe_performance.out
 #BSUB -e vqe_performance.err
@@ -37,4 +37,4 @@ lscpu
 ~/micromamba/envs/qrunch/bin/python compare_vqe_methods.py BeH2 6 7 40 -b STO-3G -o compare_vqe_methods
 
 ## R-methyloxirane
-~/micromamba/envs/qrunch/bin/python compare_vqe_methods.py R-methyloxirane 6 6 40 -b STO-3G -o compare_vqe_methods
+~/micromamba/envs/qrunch/bin/python compare_vqe_methods.py R-methyloxirane 6 6 40 -b STO-3G -o compare_vqe_methods_ecd
