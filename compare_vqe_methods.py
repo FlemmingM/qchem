@@ -211,7 +211,8 @@ def main():
     methods = []
     times = []
     times_method = []
-    memory_footprints = []
+    memory_footprints_total = []
+    memory_footprints_method = []
 
     # for the plot
     x = np.linspace(0, 40, 1000)
@@ -238,11 +239,9 @@ def main():
         if name == "fast_vqe_as":
 
             # run classical reference
-            tracemalloc.start()
             workflow.run_classical_casci()
-            current, peak = tracemalloc.get_traced_memory()
-            memory_footprints.append(peak / 1024 / 1024)
-            tracemalloc.stop()
+            memory_footprints_total.append(workflow.mem_total)
+            memory_footprints_method.append(workflow.mem_method)
 
             # add stats and save file
             pd.DataFrame(
@@ -267,11 +266,9 @@ def main():
             plt.plot(x, spectrum_casci, label = "CASCI", alpha=0.6, color="black", linestyle="--")
 
 
-            tracemalloc.start()
             workflow.run_classical_casci_dmdm()
-            current, peak = tracemalloc.get_traced_memory()
-            memory_footprints.append(peak / 1024 / 1024)
-            tracemalloc.stop()
+            memory_footprints_total.append(workflow.mem_total)
+            memory_footprints_method.append(workflow.mem_method)
 
             # add stats and save file
             pd.DataFrame(
@@ -296,11 +293,9 @@ def main():
             plt.plot(x, spectrum_casci_dmdm, label = "CASCI + DMDM", alpha=0.6)
 
         # Run VQE method
-        tracemalloc.start()
         workflow.run_quantum_vqe()
-        current, peak = tracemalloc.get_traced_memory()
-        memory_footprints.append(peak / 1024 / 1024)
-        tracemalloc.stop()
+        memory_footprints_total.append(workflow.mem_total)
+        memory_footprints_method.append(workflow.mem_method)
 
         # Save dataframe
         pd.DataFrame(
@@ -346,7 +341,8 @@ def main():
             "method": methods,
             "time": times,
             "time_method": times_method,
-            "memory_mb" : memory_footprints,
+            "memory_total_mb" : memory_footprints_total,
+            "memory_method_mb": memory_footprints_method,
             "spectral_similarity": spectral_similarities,
             "basis": [f"{args.b}_CAS({args.num_active_electrons}_{args.num_active_orbitals})_states_{args.num_states}"] * len(methods),
             "molecule": [args.molecule] * len(methods)
