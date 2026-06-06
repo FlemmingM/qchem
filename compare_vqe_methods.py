@@ -308,7 +308,7 @@ def main():
         except:
             import json
             with open(f"{name}_{args.molecule}_{args.b}_CAS({args.num_active_electrons}_{args.num_active_orbitals})_states_{args.num_states}.json", 'w') as f:
-                json.dump(data, f)
+                json.dump(workflow._vqe_results, f)
 
         # Add times
         methods.append(f"{name}")
