@@ -29,8 +29,8 @@ lscpu
 # ~/micromamba/envs/qrunch/bin/python compare_vqe_methods.py H2O 10 7 40 -b cc-pvdz -o compare_vqe_methods
 
 ## H2O
-~/micromamba/envs/qrunch/bin/python compare_vqe_methods.py H2O 2 2 3 -b STO-3G -o compare_vqe_methods_h20
-~/micromamba/envs/qrunch/bin/python compare_vqe_methods.py H2O 4 4 20 -b STO-3G -o compare_vqe_methods_h20
+# ~/micromamba/envs/qrunch/bin/python compare_vqe_methods.py H2O 2 2 3 -b STO-3G -o compare_vqe_methods_h20
+# ~/micromamba/envs/qrunch/bin/python compare_vqe_methods.py H2O 4 4 20 -b STO-3G -o compare_vqe_methods_h20
 ~/micromamba/envs/qrunch/bin/python compare_vqe_methods.py H2O 6 5 40 -b STO-3G -o compare_vqe_methods_h20
-~/micromamba/envs/qrunch/bin/python compare_vqe_methods.py H2O 8 6 40 -b STO-3G -o compare_vqe_methods_h20
-~/micromamba/envs/qrunch/bin/python compare_vqe_methods.py H2O 10 7 40 -b STO-3G -o compare_vqe_methods_h20
+# ~/micromamba/envs/qrunch/bin/python compare_vqe_methods.py H2O 8 6 40 -b STO-3G -o compare_vqe_methods_h20
+# ~/micromamba/envs/qrunch/bin/python compare_vqe_methods.py H2O 10 7 40 -b STO-3G -o compare_vqe_methods_h20
