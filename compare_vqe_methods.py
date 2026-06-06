@@ -334,15 +334,17 @@ def main():
     plt.ylabel("Intensity (Oscillator Strength)")
     plt.savefig(f"{args.molecule}_uv-vis_spectrum_{args.b}_CAS({args.num_active_electrons}_{args.num_active_orbitals})_states_{args.num_states}.png")
 
-
-    print("method: ", methods),
-    print("time: ", times),
-    print("time_method: ",  times_method),
-    print("memory_total_mb: ", memory_footprints_total),
-    print("memory_method_mb: ", memory_footprints_method),
-    print("spectral_similarity: ", spectral_similarities),
-    # print("basis" [f"{args.b}_CAS({args.num_active_electrons}_{args.num_active_orbitals})_states_{args.num_states}"] * len(methods),
-    # print("molecule": [args.molecule] * len(methods)
+    with open("compute_times_memory_{args.molecule}_{args.b}_CAS({args.num_active_electrons}_{args.num_active_orbitals})_states_{args.num_states}.txt") as infile:
+        infile.write("methods:\n")
+        infile.write(methods)
+        infile.write("time:\n")
+        infile.write(times)
+        infile.write("time_method\n")
+        infile.write(times_method)
+        infile.write("memory_total_mb:\n")
+        infile.write(memory_footprints_total)
+        infile.write("memory_method_mb\n")
+        infile.write(memory_footprints_method)
 
     # save the compute times and memory footprints
     pd.DataFrame(
