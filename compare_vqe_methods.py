@@ -335,6 +335,15 @@ def main():
     plt.savefig(f"{args.molecule}_uv-vis_spectrum_{args.b}_CAS({args.num_active_electrons}_{args.num_active_orbitals})_states_{args.num_states}.png")
 
 
+    print("method: ", methods),
+    print("time: ", times),
+    print("time_method: ",  times_method),
+    print("memory_total_mb: ", memory_footprints_total),
+    print("memory_method_mb: ", memory_footprints_method),
+    print("spectral_similarity: ", spectral_similarities),
+    # print("basis" [f"{args.b}_CAS({args.num_active_electrons}_{args.num_active_orbitals})_states_{args.num_states}"] * len(methods),
+    # print("molecule": [args.molecule] * len(methods)
+
     # save the compute times and memory footprints
     pd.DataFrame(
         {
