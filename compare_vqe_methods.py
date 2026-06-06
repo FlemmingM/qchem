@@ -309,12 +309,12 @@ def main():
         times.append(workflow.vqe_time)
         times_method.append(workflow.vqe_time_method)
 
-        with open("compute_times_memory_{name}_{args.molecule}_{args.b}_CAS({args.num_active_electrons}_{args.num_active_orbitals})_states_{args.num_states}.txt") as infile:
-            infile.write(f"method: {name}\n")
-            infile.write(f"time: {workflow.vqe_time}\n")
-            infile.write(f"time_method: {workflow.vqe_time_method}\n")
-            infile.write(f"memory_total_mb: {workflow.mem_total}\n")
-            infile.write(f"memory_method_mb: {workflow.mem_method}\n")
+        with open("compute_times_memory_{name}_{args.molecule}_{args.b}_CAS({args.num_active_electrons}_{args.num_active_orbitals})_states_{args.num_states}.txt", "w") as outfile:
+            outfile.write(f"method: {name}\n")
+            outfile.write(f"time: {workflow.vqe_time}\n")
+            outfile.write(f"time_method: {workflow.vqe_time_method}\n")
+            outfile.write(f"memory_total_mb: {workflow.mem_total}\n")
+            outfile.write(f"memory_method_mb: {workflow.mem_method}\n")
 
         plot_name = name.replace("_", " ").upper()
 
