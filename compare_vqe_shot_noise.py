@@ -143,7 +143,7 @@ def main():
 
     # shot_list = [10000, 20000, 30000, 40000, 50000, 60000, 70000, 80000, 90000, 100000]
 
-    shot_list = [10000, 50000, 100000]
+    shot_list = [1000, 5000]
 
     rdm1_errors = []
     rdm2_errors = []
@@ -217,7 +217,8 @@ def main():
     )
 
     df_results.reset_index().drop("index", axis=1).to_csv(
-        f"vqe_{args.molecule}_shot_noise_CAS({args.num_active_electrons}_{args.num_active_orbitals})_states_{args.num_states}.csv"    )
+        f"vqe_{args.molecule}_{args.b}_shot_noise_CAS({args.num_active_electrons}_{args.num_active_orbitals})_states_{args.num_states}.csv"
+    )
 
 
 
