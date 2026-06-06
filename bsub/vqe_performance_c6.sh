@@ -20,4 +20,5 @@
 lscpu
 
 ## H2O
-~/micromamba/envs/qrunch/bin/python compare_vqe_methods_simple.py H2O 4 4 20 -b STO-3G -o compare_vqe_methods_c6
+# ~/micromamba/envs/qrunch/bin/python compare_vqe_methods_simple.py H2O 4 4 20 -b STO-3G -o compare_vqe_methods_c6
+~/micromamba/envs/qrunch/bin/python compare_vqe_methods.py H2O 8 6 40 -b STO-3G -o compare_vqe_methods_c6
