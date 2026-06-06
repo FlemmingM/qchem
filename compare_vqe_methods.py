@@ -306,9 +306,7 @@ def main():
                 f"{name}_{args.molecule}_{args.b}_CAS({args.num_active_electrons}_{args.num_active_orbitals})_states_{args.num_states}.csv"
             )
         except:
-            import json
-            with open(f"{name}_{args.molecule}_{args.b}_CAS({args.num_active_electrons}_{args.num_active_orbitals})_states_{args.num_states}.json", 'w') as f:
-                json.dump(workflow._vqe_results, f)
+            print(workflow._vqe_results)
 
         # Add times
         methods.append(f"{name}")
