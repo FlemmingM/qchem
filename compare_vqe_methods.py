@@ -298,11 +298,17 @@ def main():
         memory_footprints_method.append(workflow.mem_method)
 
         # Save dataframe
-        pd.DataFrame(
-            workflow._vqe_results
-        ).to_csv(
-            f"{name}_{args.molecule}_{args.b}_CAS({args.num_active_electrons}_{args.num_active_orbitals})_states_{args.num_states}.csv"
-        )
+
+        try:
+            pd.DataFrame(
+                workflow._vqe_results
+            ).to_csv(
+                f"{name}_{args.molecule}_{args.b}_CAS({args.num_active_electrons}_{args.num_active_orbitals})_states_{args.num_states}.csv"
+            )
+        except:
+            import json
+            with open(f"{name}_{args.molecule}_{args.b}_CAS({args.num_active_electrons}_{args.num_active_orbitals})_states_{args.num_states}.json", 'w') as f:
+                json.dump(data, f)
 
         # Add times
         methods.append(f"{name}")
