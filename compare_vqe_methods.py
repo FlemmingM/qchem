@@ -309,6 +309,13 @@ def main():
         times.append(workflow.vqe_time)
         times_method.append(workflow.vqe_time_method)
 
+        with open("compute_times_memory_{name}_{args.molecule}_{args.b}_CAS({args.num_active_electrons}_{args.num_active_orbitals})_states_{args.num_states}.txt") as infile:
+            infile.write(f"method: {name}\n")
+            infile.write(f"time: {workflow.vqe_time}\n")
+            infile.write(f"time_method: {workflow.vqe_time_method}\n")
+            infile.write(f"memory_total_mb: {workflow.mem_total}\n")
+            infile.write(f"memory_method_mb: {workflow.mem_method}\n")
+
         plot_name = name.replace("_", " ").upper()
 
         # Plot
@@ -334,17 +341,6 @@ def main():
     plt.ylabel("Intensity (Oscillator Strength)")
     plt.savefig(f"{args.molecule}_uv-vis_spectrum_{args.b}_CAS({args.num_active_electrons}_{args.num_active_orbitals})_states_{args.num_states}.png")
 
-    with open("compute_times_memory_{args.molecule}_{args.b}_CAS({args.num_active_electrons}_{args.num_active_orbitals})_states_{args.num_states}.txt") as infile:
-        infile.write("methods:\n")
-        infile.write(methods)
-        infile.write("time:\n")
-        infile.write(times)
-        infile.write("time_method\n")
-        infile.write(times_method)
-        infile.write("memory_total_mb:\n")
-        infile.write(memory_footprints_total)
-        infile.write("memory_method_mb\n")
-        infile.write(memory_footprints_method)
 
     # save the compute times and memory footprints
     pd.DataFrame(
