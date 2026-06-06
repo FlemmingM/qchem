@@ -22,4 +22,4 @@ lscpu
 # Run each molecule: minimal and Full CI
 
 ## Benzene
-~/micromamba/envs/qrunch/bin/python compare_vqe_methods_fast.py benzene 6 6 40 -b cc-pvdz -o compare_vqe_methods_benzene
+~/micromamba/envs/qrunch/bin/python compare_vqe_methods_fast.py benzene 6 6 40 -b cc-pvtz -o compare_vqe_methods_benzene
