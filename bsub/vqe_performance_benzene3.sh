@@ -1,0 +1,25 @@
+#!/bin/sh
+### queue name
+#BSUB -q hpc
+### job name
+#BSUB -J vqe_performance
+### number of cores
+#BSUB -n 1
+### -- specify that the cores must be on the same host -- 
+#BSUB -R "span[hosts=1]"
+### -- specify that we need 4GB of memory per core/slot -- 
+#BSUB -R "rusage[mem=10GB]"
+### -- set walltime limit: hh:mm -- 
+#BSUB -W 48:00
+### Output file and error file
+#BSUB -o vqe_performance.out
+#BSUB -e vqe_performance.err
+
+
+# Get used CPU
+lscpu
+
+# Run each molecule: minimal and Full CI
+
+## Benzene
+~/micromamba/envs/qrunch/bin/python compare_vqe_methods_fast.py benzene 8 8 40 -b cc-pvdz -o compare_vqe_methods_benzene
