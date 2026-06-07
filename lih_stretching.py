@@ -81,7 +81,7 @@ for factor in np.linspace(0.0, 4.0, 41):
         })
     )
 
-    casci__dmdm_dfs.append(
+    casci_dmdm_dfs.append(
         pd.DataFrame({
             "state": [*range(1, len(result_casci_dmdm["exc_energies_ev"])+1)],
             "energy_ev": result_casci_dmdm["exc_energies_ev"],
