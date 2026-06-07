@@ -20,6 +20,50 @@ from dmdm.interface import DMDM
 from typing import Dict, Any, Optional
 from qiskit_aer.noise import NoiseModel
 from math import comb
+from collections import defaultdict
+
+
+def expand_gate(gate):
+    """Expand one gate while preserving execution order."""
+    if hasattr(gate, "gates"):
+        return gate.gates
+    return [gate]
+
+
+def get_all_gates(circuit):
+    expanded = []
+
+    for op in circuit:
+        if hasattr(op, "gates"):
+            expanded.extend(op.gates)
+        else:
+            expanded.append(op)
+    return expanded
+
+
+def circuit_depth(circuit):
+    # qubit -> last layer it was used in
+    last_layer = defaultdict(int)
+
+    depth = 0
+
+    for op in circuit:
+        ops = expand_gate(op)
+
+        for g in ops:
+            q = g.qubit_indices
+
+            # compute when this gate can execute
+            start = max((last_layer[i] for i in q), default=0)
+            end = start + 1
+
+            for i in q:
+                last_layer[i] = end
+
+            depth = max(depth, end)
+
+    return depth
+
 
 def match_top_k_weighted_rmse(ref_energies, ref_osc, pred_energies, k=10, tol=2.0, unmatched_penalty=5.0):
     """
@@ -234,11 +278,8 @@ def get_fci_params(molecule_coords: list, basis: str, charge=0, multiplicity=1):
     # 2. Run Restricted Hartree-Fock (RHF) to get orbital count
     # Note: We run RHF just to get the basis set dimensions. 
     # If the system is open-shell, UHF might be needed, but orbital count is usually the same.
-    try:
-        mf = scf.RHF(mol).run()
-    except Exception as e:
-        # Fallback to UHF if RHF fails (common for open shells)
-        mf = scf.UHF(mol).run()
+    mf = scf.RHF(mol).run()
+
 
     # 3. Extract parameters
     # mo_coeff shape is (n_basis, n_orbitals)
