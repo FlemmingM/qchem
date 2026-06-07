@@ -42,6 +42,7 @@ calculator = (qc.calculator_creator()
 
 vqe_dfs = []
 casci_dfs = []
+casci_dmdm_dfs
 for factor in np.linspace(0.0, 4.0, 41):
 
     mol = [
