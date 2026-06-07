@@ -4,7 +4,7 @@
 import os
 import time
 from pathlib import Path
-import psutil
+import tracemalloc
 import subprocess
 import numpy as np
 import pandas as pd
@@ -944,8 +944,7 @@ class DMDMWorkflow:
         """Run the classical CASCI workflow using PySCF."""
 
         start = time.time()
-        process = psutil.Process(os.getpid())
-        mem_before = process.memory_info().rss
+        tracemalloc.start()
         # 2. RHF & MP2
         mf = scf.RHF(self.molecule).run()
 
@@ -975,8 +974,9 @@ class DMDMWorkflow:
         z_cas = one_electron_integral_transform(C_cas, z_ao)
         MO_DM = [x_cas, y_cas, z_cas]
 
-        mem_after = process.memory_info().rss
-        self.mem_method = (mem_after - mem_before) / 1024 / 1024
+        current, peak = tracemalloc.get_traced_memory()
+        tracemalloc.reset_peak()
+        self.mem_method = peak / 1024 / 1024
         self.casci_dmdm_time_method = time.time() - start
         # Initialize DMDM
         dmdm = DMDM(
@@ -998,8 +998,10 @@ class DMDMWorkflow:
         # Get Oscillator Strengths
         osc_strengths = dmdm.get_oscillator_strength(MO_DM)
 
-        mem_after = process.memory_info().rss
-        self.mem_total = (mem_after - mem_before) / 1024 / 1024
+        current, peak = tracemalloc.get_traced_memory()
+        tracemalloc.reset_peak()
+        self.mem_total = peak / 1024 / 1024
+        tracemalloc.stop()
 
         self.casci_dmdm_time = time.time() - start
         self.casci_dmdm_dmdm = dmdm
@@ -1031,8 +1033,7 @@ class DMDMWorkflow:
         """Run the classical CASCI workflow using PySCF."""
 
         start = time.time()
-        process = psutil.Process(os.getpid())
-        mem_before = process.memory_info().rss
+        tracemalloc.start()
 
         # 2. RHF & MP2
         mf = scf.RHF(self.molecule).run()
@@ -1126,9 +1127,11 @@ class DMDMWorkflow:
             f_val = (2.0 / 3.0) * delta_e_hartree * mu_sq
             osc_strengths.append(f_val)
         
-        mem_after = process.memory_info().rss
-        self.mem_method = (mem_after - mem_before) / 1024 / 1024
-        self.mem_total = (mem_after - mem_before) / 1024 / 1024
+        current, peak = tracemalloc.get_traced_memory()
+        tracemalloc.reset_peak()
+        self.mem_method = peak / 1024 / 1024
+        self.mem_total = peak / 1024 / 1024
+        tracemalloc.stop()
         self.casci_time = time.time() - start
         self._casci_results = {
             'exc_energies_ev': np.array(exc_energies_ev),
@@ -1149,8 +1152,7 @@ class DMDMWorkflow:
         """Run the VQE workflow using qrunch/qchem with optional noise simulation."""
 
         start = time.time()
-        process = psutil.Process(os.getpid())
-        mem_before = process.memory_info().rss
+        tracemalloc.start()
         # 1. Build Configuration (Unchanged)
         molecular_configuration = qc.build_molecular_configuration(molecule=self.molecule_list, basis_set=self.basis)
         
@@ -1255,8 +1257,9 @@ class DMDMWorkflow:
 
         self.vqe_rdms = [rdm1, rdm2, rdm3, rdm4]
 
-        mem_after = process.memory_info().rss
-        self.mem_method = (mem_after - mem_before) / 1024 / 1024
+        current, peak = tracemalloc.get_traced_memory()
+        tracemalloc.reset_peak()
+        self.mem_method = peak / 1024 / 1024
         self.vqe_time_method = time.time() - start
 
         # 6. DMDM Calculation (Unchanged logic, just using the new RDMs)
@@ -1309,8 +1312,10 @@ class DMDMWorkflow:
         exc_energies_ev = exc_energies_ev[exc_energies_ev > 1e-8]
 
 
-        mem_after = process.memory_info().rss
-        self.mem_total = (mem_after - mem_before) / 1024 / 1024
+        current, peak = tracemalloc.get_traced_memory()
+        tracemalloc.reset_peak()
+        self.mem_total = peak / 1024 / 1024
+        tracemalloc.stop()
         self.vqe_time = time.time() - start
         self.vqe_dmdm = dmdm
 
