@@ -65,7 +65,7 @@ for factor in np.linspace(0.0, 4.0, 41):
 
     vqe_dfs.append(
         pd.DataFrame({
-            "state": [*range(1, len(result["exc_energies_ev"])+1)],
+            "state": [*range(1, len(result_vqe["exc_energies_ev"])+1)],
             "energy_ev": result_vqe["exc_energies_ev"],
             "stretch": [factor] * len(result_vqe["exc_energies_ev"]),
             "oscillator_strength": result_vqe["oscillator_strengths"]
