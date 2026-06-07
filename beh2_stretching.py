@@ -62,11 +62,12 @@ for factor in np.linspace(0.0, 4.0, 41):
 
     # VQE only
     result_vqe = workflow.run_quantum_vqe()
-    result_casci =workflow.run_classical_casci_dmdm()
+    result_casci_dmdm = workflow.run_classical_casci_dmdm()
+    result_casci = workflow.run_classical_casci()
 
     vqe_dfs.append(
         pd.DataFrame({
-            "state": [*range(1, len(result["exc_energies_ev"])+1)],
+            "state": [*range(1, len(result_vqe["exc_energies_ev"])+1)],
             "energy_ev": result_vqe["exc_energies_ev"],
             "stretch": [factor] * len(result_vqe["exc_energies_ev"]),
             "oscillator_strength": result_vqe["oscillator_strengths"]
@@ -82,7 +83,18 @@ for factor in np.linspace(0.0, 4.0, 41):
         })
     )
 
+    casci__dmdm_dfs.append(
+        pd.DataFrame({
+            "state": [*range(1, len(result_casci_dmdm["exc_energies_ev"])+1)],
+            "energy_ev": result_casci_dmdm["exc_energies_ev"],
+            "stretch": [factor] * len(result_casci_dmdm["exc_energies_ev"]),
+            "oscillator_strength": result_casci_dmdm["oscillator_strengths"]
+        })
+    )
+
 vqe_df = pd.concat(vqe_dfs, axis=0).reset_index()
 casci_df = pd.concat(casci_dfs, axis=0).reset_index()
+casci_dmdm_df = pd.concat(casci_dmdm_dfs, axis=0).reset_index()
 vqe_df.to_csv("beh2_stretching/vqe_beh2_stretching.csv")
-casci_df.to_csv("beh2_stretching/casci_dmdm_beh2_stretching.csv")
+casci_df.to_csv("beh2_stretching/casci_beh2_stretching.csv")
+casci_dmdm_df.to_csv("beh2_stretching/casci_dmdm_beh2_stretching.csv")
