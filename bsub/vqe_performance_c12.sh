@@ -15,7 +15,6 @@
 #BSUB -o compare_vqe_methods_c12.out
 #BSUB -e compare_vqe_methods_c12.err
 
-
 # Get used CPU
 lscpu
 
