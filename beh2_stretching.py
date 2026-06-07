@@ -61,24 +61,24 @@ for factor in np.linspace(0.0, 4.0, 41):
     )
 
     # VQE only
-    result = workflow.run_quantum_vqe()
-    workflow.run_classical_casci_dmdm()
+    result_vqe = workflow.run_quantum_vqe()
+    result_casci =workflow.run_classical_casci_dmdm()
 
     vqe_dfs.append(
         pd.DataFrame({
             "state": [*range(1, len(result["exc_energies_ev"])+1)],
-            "energy_ev": result["exc_energies_ev"],
-            "stretch": [factor] * len(result["exc_energies_ev"]),
-            "oscillator_strength": result["oscillator_strengths"]
+            "energy_ev": result_vqe["exc_energies_ev"],
+            "stretch": [factor] * len(result_vqe["exc_energies_ev"]),
+            "oscillator_strength": result_vqe["oscillator_strengths"]
         })
     )
     
     casci_dfs.append(
         pd.DataFrame({
-            "state": [*range(1, len(result["exc_energies_ev"])+1)],
-            "energy_ev": result["exc_energies_ev"],
-            "stretch": [factor] * len(result["exc_energies_ev"]),
-            "oscillator_strength": result["oscillator_strengths"]
+            "state": [*range(1, len(result_casci["exc_energies_ev"])+1)],
+            "energy_ev": result_casci["exc_energies_ev"],
+            "stretch": [factor] * len(result_casci["exc_energies_ev"]),
+            "oscillator_strength": result_casci["oscillator_strengths"]
         })
     )
 
