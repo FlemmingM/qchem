@@ -42,6 +42,8 @@ calculator = (qc.calculator_creator()
 
 vqe_dfs = []
 casci_dfs = []
+casci_dmdm_dfs = []
+
 for factor in np.linspace(0.0, 4.0, 41):
 
     mol = [('Li', 0.0, 0.0, 0.0), ('H', 0.0, 0.0, 1.595+factor)]
@@ -58,7 +60,8 @@ for factor in np.linspace(0.0, 4.0, 41):
 
     # VQE only
     result_vqe = workflow.run_quantum_vqe()
-    result_casci =workflow.run_classical_casci_dmdm()
+    result_casci_dmdm = workflow.run_classical_casci_dmdm()
+    result_casci = workflow.run_classical_casci()
 
     vqe_dfs.append(
         pd.DataFrame({
@@ -78,7 +81,18 @@ for factor in np.linspace(0.0, 4.0, 41):
         })
     )
 
+    casci__dmdm_dfs.append(
+        pd.DataFrame({
+            "state": [*range(1, len(result_casci_dmdm["exc_energies_ev"])+1)],
+            "energy_ev": result_casci_dmdm["exc_energies_ev"],
+            "stretch": [factor] * len(result_casci_dmdm["exc_energies_ev"]),
+            "oscillator_strength": result_casci_dmdm["oscillator_strengths"]
+        })
+    )
+
 vqe_df = pd.concat(vqe_dfs, axis=0).reset_index()
 casci_df = pd.concat(casci_dfs, axis=0).reset_index()
+casci_dmdm_df = pd.concat(casci_dmdm_dfs, axis=0).reset_index()
 vqe_df.to_csv("lih_stretching/vqe_lih_stretching.csv")
-casci_df.to_csv("lih_stretching/casci_dmdm_lih_stretching.csv")
+casci_df.to_csv("lih_stretching/casci_lih_stretching.csv")
+casci_dmdm_df.to_csv("lih_stretching/casci_dmdm_lih_stretching.csv")
