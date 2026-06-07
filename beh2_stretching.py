@@ -48,7 +48,7 @@ for factor in np.linspace(0.0, 4.0, 41):
             ("Be", 0.0, 0.0, 0.0),
             ("H", 0.0, 0.0, 1.330+factor),
             ("H", 0.0, 0.0, -1.330-factor),
-        ],
+        ]
     workflow = DMDMWorkflow(
         basis="cc-pvdz",
         molecule=mol,
