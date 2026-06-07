@@ -14,6 +14,8 @@
 ### Output file and error file
 #BSUB -o compare_vqe_methods_c1.out
 #BSUB -e compare_vqe_methods_c1.err
+### machine id
+#BSUB -m "n-62-31-23"
 
 
 # Get used CPU
