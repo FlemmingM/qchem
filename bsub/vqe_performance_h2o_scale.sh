@@ -19,4 +19,4 @@
 # Get used CPU
 lscpu
 
-~/micromamba/envs/qrunch/bin/python compare_vqe_methods.py H2O 10 7 40 -b cc-pvtz -o vqe_performance_h2o_scale
+~/micromamba/envs/qrunch/bin/python compare_vqe_methods.py H2O 4 4 20 -b cc-pvtz -o vqe_performance_h2o_scale
