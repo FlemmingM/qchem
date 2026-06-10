@@ -1076,113 +1076,99 @@ class DMDMWorkflow:
         start = time.time()
         tracemalloc.start()
 
-        # 2. RHF & MP2
+        # 1. RHF & MP2
         mf = scf.RHF(self.molecule).run()
 
-        # 3. CASCI
+        # 2. CASCI Setup
         mc = mcscf.CASCI(mf, ncas=self.num_active_orbitals, nelecas=self.num_active_electrons)
         mc.fcisolver.nroots = self.num_states
+        
         if self.mp2:
             mp2 = mp.MP2(mf).run()
             _, natorbs = mcscf.addons.make_natural_orbitals(mp2)
-            mc.mo_coeff = natorbs # Optional: use natural orbitals
+            mc.mo_coeff = natorbs
         
+        # Run kernel
         e_tot, e_cas, ci, mo, mo_energy = mc.kernel()
         
-        # 4. Integrals
-        h_mo, _ = mc.get_h1eff()
-        g_mo = mc.get_h2eff()
-        g_mo = ao2mo.restore(1, g_mo, self.num_active_orbitals)
-
-        # 5. RDM Reconstruction & DMDM
-        rdm_active_energies = []
-
-        for i in range(self.num_states):
-            ci_vec = ci[i]
-            rdm1, rdm2 = mc.fcisolver.make_rdm12(ci_vec, self.num_active_orbitals, self.num_active_electrons)
-            
-            e1 = np.einsum('pq,pq', h_mo, rdm1)
-            e2 = 0.5 * np.einsum('pqrs,pqrs', g_mo, rdm2)
-            rdm_active_energies.append(e1 + e2)
-
-        rdm_active_energies = np.array(rdm_active_energies)
-        E_core = e_tot[0] - e_cas[0]
-        rdm_total_energies = rdm_active_energies + E_core
-
-
-        # Dipole Integrals
-        x_ao, y_ao, z_ao = self.molecule.intor('int1e_r', comp=3)
+        # 3. Integral Transformations
         cas_slice = slice(mc.ncore, mc.ncore + self.num_active_orbitals)
         C_cas = mo[:, cas_slice]
         
+        # --- Electric Dipole Integrals (r) ---
+        x_ao, y_ao, z_ao = self.molecule.intor('int1e_r', comp=3)
         x_cas = one_electron_integral_transform(C_cas, x_ao)
         y_cas = one_electron_integral_transform(C_cas, y_ao)
         z_cas = one_electron_integral_transform(C_cas, z_ao)
         MO_DM = [x_cas, y_cas, z_cas]
-
         
-        dipole_mos = [x_cas, y_cas, z_cas] # Shape: (3, ncas, ncas)
+        # --- Magnetic Dipole Integrals (Angular Momentum r x p) ---
+        mx_ao, my_ao, mz_ao = self.molecule.intor('int1e_cg_irxp', comp=3)
+        mx_cas = one_electron_integral_transform(C_cas, mx_ao)
+        my_cas = one_electron_integral_transform(C_cas, my_ao)
+        mz_cas = one_electron_integral_transform(C_cas, mz_ao)
+        MO_MG = [mx_cas, my_cas, mz_cas]
 
-        # Compute Transition Dipole Moments and Oscillator Strengths
+        # 4. Compute Excitation Energies, Oscillator Strengths, AND Rotational Strengths
         exc_energies_ev = []
         osc_strengths = []
+        rot_strengths = []
 
-        # Ground state index is 0
         gs_ci = ci[0]
-        gs_energy = rdm_total_energies[0]
+        gs_energy = e_cas[0] 
 
         for i in range(1, self.num_states):
             excited_ci = ci[i]
-            excited_energy = rdm_total_energies[i]
+            excited_energy = e_cas[i]
 
-            # Excitation Energy (in Hartree)
+            # Excitation Energy
             delta_e_hartree = excited_energy - gs_energy
             delta_e_ev = delta_e_hartree * self.hartree_to_ev
             exc_energies_ev.append(delta_e_ev)
 
-            # Transition Dipole Moment: <Psi_gs | mu | Psi_ex>
-            # We need the transition 1-RDM between state 0 and state i
-            # PySCF fcisolver.make_rdm1_trans(rdm1, rdm2, ...) is not standard for CASCI directly 
-            # but we can use the generic FCISolver method for transition RDMs if available,
-            # or compute it manually via the CI vectors.
+            # Use trans_rdm1 ONLY (One-body operators only require 1-RDM)
+            trans_rdm1 = mc.fcisolver.trans_rdm1(
+                gs_ci, 
+                excited_ci, 
+                self.num_active_orbitals, 
+                self.num_active_electrons
+            )
 
-            # Method: Use mc.fcisolver.trans_rdm1 if available, otherwise manual contraction.
-            # In PySCF, for CASCI, we can compute the transition 1-RDM manually:
-            # <Psi_i | E_pq | Psi_j> where E_pq is the spin-free excitation operator.
-
-            # This returns the spin-summed 1-RDM for transition between state 0 and i
-            # Arguments: (ci1, ci2, ncas, nelec)
-            trans_rdm1 = mc.fcisolver.trans_rdm1(gs_ci, excited_ci, self.num_active_orbitals, self.num_active_electrons)
-
-
-            # Contract transition RDM with dipole integrals
-            # mu_ij = sum_{pq} trans_rdm1[pq] * mu_pq
+            # --- Electric Transition Dipole Moment ---
             mu_x = np.einsum('pq,pq', trans_rdm1, x_cas)
             mu_y = np.einsum('pq,pq', trans_rdm1, y_cas)
             mu_z = np.einsum('pq,pq', trans_rdm1, z_cas)
-
             mu_sq = mu_x**2 + mu_y**2 + mu_z**2
-
-            # Oscillator Strength Formula: f = (2/3) * Delta_E * |mu|^2
-            # Delta_E in Hartree, mu in Bohr (atomic units)
+            
+            # Oscillator Strength
             f_val = (2.0 / 3.0) * delta_e_hartree * mu_sq
             osc_strengths.append(f_val)
+
+            # --- Magnetic Transition Dipole Moment ---
+            m_x = np.einsum('pq,pq', trans_rdm1, mx_cas)
+            m_y = np.einsum('pq,pq', trans_rdm1, my_cas)
+            m_z = np.einsum('pq,pq', trans_rdm1, mz_cas)
+
+            # Rotational Strength
+            R_val = mu_x * m_x + mu_y * m_y + mu_z * m_z
+            rot_strengths.append(R_val)
         
         current, peak = tracemalloc.get_traced_memory()
-        tracemalloc.reset_peak()
         self.mem_method = peak / 1024 / 1024
         self.mem_total = peak / 1024 / 1024
         tracemalloc.stop()
         self.casci_time = time.time() - start
+        
         self._casci_results = {
             'exc_energies_ev': np.array(exc_energies_ev),
             'oscillator_strengths': np.array(osc_strengths),
-            # 'total_energies': rdm_total_energies,
-            # 'e_cas': e_cas,
+            'rotational_strengths': np.array(rot_strengths),
         }
+        
         self._casci_done = True
         if self.verbose > 0:
             print("Done with CASCI computations...\n")
+            
         return self._casci_results
 
     # ==========================
@@ -1227,6 +1213,10 @@ class DMDMWorkflow:
         h_mo = one_electron_integral_transform(mo_coeffs, self.molecule.intor("int1e_kin") + self.molecule.intor("int1e_nuc"))
         g_mo = two_electron_integral_transform(mo_coeffs, self.molecule.intor("int2e"))
 
+        current, peak = tracemalloc.get_traced_memory()
+        tracemalloc.reset_peak()
+        self.mem_method = peak / 1024 / 1024
+        self.vqe_time_method = time.time() - start
         # ---------------------------------------------------------
         # 5. ESTIMATOR CREATION WITH NOISE SUPPORT (MODIFIED)
         # ---------------------------------------------------------
@@ -1297,11 +1287,6 @@ class DMDMWorkflow:
             rdm4 = rdm_calculator.calculate_4_rdm(circuit=result.final_circuit, shots=None)
 
         self.vqe_rdms = [rdm1, rdm2, rdm3, rdm4]
-
-        current, peak = tracemalloc.get_traced_memory()
-        tracemalloc.reset_peak()
-        self.mem_method = peak / 1024 / 1024
-        self.vqe_time_method = time.time() - start
 
         # 6. DMDM Calculation (Unchanged logic, just using the new RDMs)
         if self.casci_like == False:
