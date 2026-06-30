@@ -4,7 +4,7 @@
 import os
 import time
 from pathlib import Path
-import tracemalloc
+import psutil
 import subprocess
 import numpy as np
 import pandas as pd
@@ -14,6 +14,7 @@ import matplotlib.pyplot as plt
 from typing import Any, Dict, List, Optional, Tuple
 from enum import Enum
 from pyscf import gto, scf, fci, mp, mcscf, ao2mo
+import pyscf
 import qrunch as qc
 from qrunch.chemistry.reduced_density_matrices.reduced_density_matrix_calculator import ReducedDensityMatrixCalculator
 from dmdm.interface import DMDM
@@ -21,6 +22,354 @@ from typing import Dict, Any, Optional
 from qiskit_aer.noise import NoiseModel
 from math import comb
 from collections import defaultdict
+
+
+def add_missed_transitions(df_casci, df_vqe, penalty=10.0):
+    """
+    Add penalty-shifted entries for transitions present in CASCI but missing from VQE.
+    
+    For each transition in df_casci whose index is not referenced in df_vqe['ref_idx'],
+    a new row is appended to df_vqe with pred_E = ref_E + penalty.
+    
+    Parameters:
+    - df_casci: Reference DataFrame (CASCI), indexed by transition
+    - df_vqe: Predicted DataFrame (VQE), must contain 'ref_idx', 'ref_E', 'pred_E'
+    - penalty: Energy shift (eV) added to ref_E for missing transitions
+    
+    Returns:
+    - df_vqe with missing transitions appended
+    """
+    matched_idxs = set(df_vqe["ref_idx"].tolist())
+    
+    missed_rows = []
+    for idx in df_casci.index:
+        if idx not in matched_idxs:
+            ref_e = df_casci.loc[idx, "exc_energies_ev"]
+            ref_f = df_casci.loc[idx, "oscillator_strengths"]
+            missed_rows.append({
+                "ref_idx": idx,
+                "ref_E": ref_e,
+                "pred_E": ref_e + penalty,
+                "ref_f": ref_f,
+                "pred_f": 0.0
+            })
+    
+    if missed_rows:
+        df_vqe = pd.concat([df_vqe, pd.DataFrame(missed_rows)], axis=0, ignore_index=True)
+    
+    return df_vqe
+
+
+
+# helper function to build spectra and comparison tables
+def compare_spectra(df_true, dfs_pred, labels, sigma=0.2, tol=2.0, k=10, x_range=(0, 80), x_points=1000, col: str="oscillator_strengths"):
+    """
+    Compare predicted spectra against a reference using Weighted RMSE and Spectral Similarity.
+    
+    Args:
+        df_true (pd.DataFrame): Reference dataframe with 'exc_energies_ev' and 'oscillator_strengths'.
+        dfs_pred (list of pd.DataFrame): List of predicted dataframes.
+        labels (list of str): Method labels (first entry should be the reference method).
+        sigma (float): Gaussian broadening width in eV for spectral similarity.
+        tol (float): Maximum energy difference (eV) for greedy matching in RMSE.
+        k (int): Number of top-K reference states for RMSE.
+        x_range (tuple): Energy range (min, max) for spectral construction.
+        x_points (int): Number of points in the energy grid.
+        col (str): The column used as y axis.
+        
+    Returns:
+        tuple:
+            - results_df (pd.DataFrame): Columns 'method', 'rmse', 'spectral_similarity'.
+            - x_grid (np.ndarray): The energy grid used for spectra.
+            - y_ref (np.ndarray): The reference spectrum array.
+            - y_preds (dict): Dictionary mapping method labels to their spectrum arrays.
+    """
+    x = np.linspace(x_range[0], x_range[1], x_points)
+    
+    # Build reference spectrum once
+    y_ref = build_spectrum(
+        df_true["exc_energies_ev"],
+        df_true[col],
+        x,
+        sigma=sigma
+    )
+    
+    # Initialize lists for results
+    rmses = [0.0]
+    similarities = [1.0]
+    y_preds = {labels[0]: y_ref}  # Store reference spectrum under its label
+    
+    for i, df in enumerate(dfs_pred):
+        method_label = labels[i + 1] # Skip the first label which is for the reference
+        
+        
+        # 2. Spectral Similarity & Store Spectrum
+        y_pred = build_spectrum(
+            df["exc_energies_ev"],
+            df[col],
+            x,
+            sigma=sigma
+        )
+        
+        sim = spectral_similarity(y_ref, y_pred, x)
+        similarities.append(sim)
+        
+        # Store the spectrum
+        y_preds[method_label] = y_pred
+    
+    results_df = pd.DataFrame({
+        "method": labels,
+        # "rmse": rmses,
+        "spectral_similarity": similarities
+    })
+    
+    return results_df, x, y_ref, y_preds
+
+def match_spectral_peaks(
+    df_ref: pd.DataFrame,
+    dfs_pred: list,
+    top_k: int = 10,
+    tol_eV: float = 0.2,
+    penalty: float = 10.0
+) -> tuple[list[pd.DataFrame], list[pd.DataFrame]]:
+    """
+    Matches the top k strongest peaks from a reference spectrum against multiple
+    predicted spectra using a greedy energy-proximity algorithm.
+
+    Args:
+        df_ref: DataFrame with columns ['exc_energies_ev', 'oscillator_strengths', 'rotational_strengths'].
+        dfs_pred: List of DataFrames (one per method) with same columns.
+        top_k: Number of strongest reference peaks to attempt to match.
+        tol_eV: Maximum energy difference (eV) to consider a peak a match.
+
+    Returns:
+        Tuple of two lists:
+        - matched_dfs: One DataFrame per method, one row per reference peak.
+        - unmatched_dfs: One DataFrame per method, containing predicted peaks
+          that were NOT matched to any reference peak.
+    """
+
+    # --- 1. Select top-K reference peaks by oscillator strength ---
+    df_ref_sorted = (
+        df_ref.sort_values("oscillator_strengths", ascending=False)
+        .head(top_k)
+        .reset_index(drop=True)
+        .dropna(subset=["exc_energies_ev"])
+    )
+
+    n_targets = len(df_ref_sorted)
+    if n_targets == 0:
+        return [], []
+
+    matched_dfs = []
+    unmatched_dfs = []
+
+    for idx, df_pred in enumerate(dfs_pred):
+        df_pred_sorted = df_pred.sort_values("exc_energies_ev").reset_index(drop=True)
+        used_pred_indices = set()
+
+        # --- 2. Build rows greedily ---
+        rows = []
+        for i, ref_row in df_ref_sorted.iterrows():
+            ref_e = ref_row["exc_energies_ev"]
+            ref_f = ref_row["oscillator_strengths"]
+            ref_r = ref_row["rotational_strengths"]
+
+            best_dist = np.inf
+            best_j = -1
+
+            for j, pred_row in df_pred_sorted.iterrows():
+                if j in used_pred_indices:
+                    continue
+                dist = abs(pred_row["exc_energies_ev"] - ref_e)
+                if dist < best_dist:
+                    best_dist = dist
+                    best_j = j
+
+            if best_dist <= tol_eV and best_j != -1:
+                # --- Match found ---
+                used_pred_indices.add(best_j)
+                pred_row = df_pred_sorted.iloc[best_j]
+                rows.append({
+                    "ref_exc_energies_ev": ref_e,
+                    "ref_oscillator_strengths": ref_f,
+                    "ref_rotational_strengths": ref_r,
+                    "pred_exc_energies_ev": pred_row["exc_energies_ev"],
+                    "pred_oscillator_strengths": pred_row["oscillator_strengths"],
+                    "pred_rotational_strengths": pred_row["rotational_strengths"],
+                    "delta_e": best_dist,
+                    "delta_o": abs(ref_f - pred_row["oscillator_strengths"]),
+                    "matched": True,
+                })
+            else:
+                # --- No match → NaN ---
+                rows.append({
+                    "ref_exc_energies_ev": ref_e,
+                    "ref_oscillator_strengths": ref_f,
+                    "ref_rotational_strengths": ref_r,
+                    "pred_exc_energies_ev": np.nan,
+                    "pred_oscillator_strengths": np.nan,
+                    "pred_rotational_strengths": np.nan,
+                    "delta_e": penalty,
+                    "delta_o": 0.0,
+                    "matched": False,
+                })
+
+        result_df = pd.DataFrame(rows).sort_values("ref_exc_energies_ev").reset_index(drop=True)
+
+        # --- 3. Collect unmatched predicted peaks ---
+        unmatched_mask = ~df_pred_sorted.index.isin(used_pred_indices)
+        unmatched_df = (
+            df_pred_sorted.loc[unmatched_mask, ["exc_energies_ev", "oscillator_strengths", "rotational_strengths"]]
+            .sort_values("exc_energies_ev")
+            .reset_index(drop=True)
+        )
+
+        # --- 4. Attach summary stats ---
+        n_matched = result_df["matched"].sum()
+        result_df.attrs = {
+            "method_idx": idx,
+            "n_targets": n_targets,
+            "n_matched": n_matched,
+            "match_ratio": n_matched / n_targets,
+            "avg_energy_error_eV": result_df["delta_e"].mean(),
+            "avg_osc_error": (
+                result_df.loc[result_df["matched"], "ref_oscillator_strengths"]
+                - result_df.loc[result_df["matched"], "pred_oscillator_strengths"]
+            ).abs().mean(),
+        }
+        matched_dfs.append(result_df)
+        unmatched_dfs.append(unmatched_df)
+
+    return matched_dfs, unmatched_dfs
+
+
+def match_spectral_peaks_v2(
+    df_ref: pd.DataFrame, 
+    dfs_pred: list, 
+    top_k: int = 10, 
+    tol_eV: float = 0.2, 
+    unmatched_penalty: float = 10.0,
+) -> tuple:
+    """
+    Matches the top k strongest peaks from a reference spectrum against multiple 
+    predicted spectra using a greedy energy-proximity algorithm.
+    
+    Args:
+        df_ref: DataFrame with columns ['exc_energies_ev', 'oscillator_strengths'].
+        dfs_pred: List of DataFrames (one per method) with same columns.
+        top_k: Number of strongest reference peaks to attempt to match.
+        tol_eV: Maximum energy difference (eV) to consider a peak a match.
+        unmatched_penalty: Value used for error calculation if a peak cannot be matched.
+        
+    Returns:
+        A tuple containing:
+        - results_list: List of dicts, one per predicted DF, containing matched errors and stats.
+        - global_matches: Details of all matches (useful for debugging/plotting).
+    """
+    
+    # 1. Identify the Top K Reference Peaks (sorted by oscillator strength)
+    df_ref_sorted = df_ref.sort_values("oscillator_strengths", ascending=False).head(top_k).reset_index(drop=True)
+    
+    # Ensure we only process valid peaks (non-NaN energies)
+    df_ref_sorted = df_ref_sorted.dropna(subset=['exc_energies_ev'])
+    
+    n_targets = len(df_ref_sorted)
+    
+    if n_targets == 0:
+        return [], []
+
+    results_list = []
+
+    for idx, df_pred in enumerate(dfs_pred):
+        # Sort predicted peaks by energy for easier searching (optional but good practice)
+        df_pred_sorted = df_pred.sort_values("exc_energies_ev").reset_index(drop=True)
+        
+        # Track which predicted indices have been "used" to prevent double counting
+        used_pred_indices = set()
+        
+        matches_details = {
+            "method_idx": idx,
+            "matches": [],
+            "energy_errors": [],
+            "osc_errors": [],
+            "unmatched_count": 0
+        }
+        
+        total_error_energy = 0.0
+        total_error_osc = 0.0
+        
+        # Iterate through the target (Reference) peaks
+        for i, ref_row in df_ref_sorted.iterrows():
+            ref_e = ref_row['exc_energies_ev']
+            ref_f = ref_row['oscillator_strengths']
+            
+            best_dist = np.inf
+            best_j = -1
+            
+            # Find the closest UNUSED predicted peak within tolerance
+            for j, pred_row in df_pred_sorted.iterrows():
+                if j in used_pred_indices:
+                    continue
+                
+                pred_e = pred_row['exc_energies_ev']
+                dist = abs(pred_e - ref_e)
+                
+                if dist < best_dist:
+                    best_dist = dist
+                    best_j = j
+            
+            # Check if the best match is within tolerance
+            if best_dist <= tol_eV and best_j != -1:
+                # Found a match!
+                used_pred_indices.add(best_j)
+                pred_row = df_pred_sorted.iloc[best_j]
+                
+                match_info = {
+                    "ref_idx": i,
+                    "ref_E": ref_e,
+                    "ref_f": ref_f,
+                    "pred_idx": best_j,
+                    "pred_E": pred_row['exc_energies_ev'],
+                    "pred_f": pred_row['oscillator_strengths'],
+                    "delta_e": best_dist
+                }
+                matches_details["matches"].append(match_info)
+                
+                # Calculate Errors
+                matches_details["energy_errors"].append(best_dist)
+                matches_details["osc_errors"].append(abs(ref_f - pred_row['oscillator_strengths']))
+                
+                total_error_energy += best_dist
+                total_error_osc += abs(ref_f - pred_row['oscillator_strengths'])
+                
+            else:
+                # No match found within tolerance
+                matches_details["unmatched_count"] += 1
+                # Apply penalty for unmatched peaks
+                matches_details["energy_errors"].append(unmatched_penalty)
+                matches_details["osc_errors"].append(ref_f) # Or penalty? Usually just flag it.
+                total_error_energy += unmatched_penalty
+    
+        # Calculate Metrics
+        n_matched = len(matches_details["matches"])
+        avg_err_E = np.mean(matches_details["energy_errors"]) if matches_details["energy_errors"] else float('nan')
+        avg_err_f = np.mean(matches_details["osc_errors"]) if matches_details["osc_errors"] else float('nan')
+        
+        results = {
+            "method_idx": idx,
+            "n_targets": n_targets,
+            "n_matched": n_matched,
+            "match_ratio": n_matched / n_targets,
+            "avg_energy_error_eV": avg_err_E,
+            "avg_osc_error": avg_err_f,
+            "unmatched_count": matches_details["unmatched_count"],
+            "details": matches_details
+        }
+        
+        results_list.append(results)
+    
+    return results_list, df_ref_sorted.to_dict('records')
 
 
 def expand_gate(gate):
@@ -122,7 +471,7 @@ def match_top_k_weighted_rmse(ref_energies, ref_osc, pred_energies, k=10, tol=2.
         
 
 
-def match_and_weighted_rmse(ref_energies, ref_osc, pred_energies, tol=1.0, unmatched_penalty=10.0):
+def match_and_weighted_rmse(ref_energies, ref_osc, pred_energies, top_k=10, tol=1.0, unmatched_penalty=10.0):
     """
     Matches reference and predicted states by energy proximity and calculates 
     oscillator-strength-weighted RMSE.
@@ -133,6 +482,7 @@ def match_and_weighted_rmse(ref_energies, ref_osc, pred_energies, tol=1.0, unmat
         ref_energies (list): Reference energies (sorted or unsorted).
         ref_osc (list): Reference oscillator strengths.
         pred_energies (list): Predicted energies.
+        top_k (int): Top k values to be matched.
         tol (float): Maximum energy difference (eV) to consider a match.
         unmatched_penalty (float): Error value assigned if a reference state has no match.
         
@@ -164,7 +514,7 @@ def match_and_weighted_rmse(ref_energies, ref_osc, pred_energies, tol=1.0, unmat
         "unmatched_ref_indices": []
     }
     
-    for i in range(n_ref):
+    for i in range(top_k):
         e_ref = ref_E_sorted[i]
         f_ref = ref_f_sorted[i]
         
@@ -985,18 +1335,15 @@ class DMDMWorkflow:
         """Run the classical CASCI workflow using PySCF."""
 
         start = time.time()
-        tracemalloc.start()
-        # 2. RHF & MP2
+        process = psutil.Process(os.getpid())
+        mem_before = process.memory_info().rss
+        # 2. RHF
         mf = scf.RHF(self.molecule).run()
 
         # 3. CASCI
-        mc = mcscf.CASCI(mf, ncas=self.num_active_orbitals, nelecas=self.num_active_electrons)
-        # mc.fcisolver.nroots = self.num_states
-        # if self.mp2:
-        #     mp2 = mp.MP2(mf).run()
-        #     _, natorbs = mcscf.addons.make_natural_orbitals(mp2)
-        #     mc.mo_coeff = natorbs # Optional: use natural orbitals        
+        mc = mcscf.CASCI(mf, ncas=self.num_active_orbitals, nelecas=self.num_active_electrons)    
         e_tot, e_cas, ci, mo, mo_energy = mc.kernel()
+        self.casci_dmdm_ground_state = e_tot
         
         # 4. Integrals
         h_mo, _ = mc.get_h1eff()
@@ -1015,10 +1362,10 @@ class DMDMWorkflow:
         z_cas = one_electron_integral_transform(C_cas, z_ao)
         MO_DM = [x_cas, y_cas, z_cas]
 
-        current, peak = tracemalloc.get_traced_memory()
-        tracemalloc.reset_peak()
-        self.mem_method = peak / 1024 / 1024
+        mem_after = process.memory_info().rss
+        self.mem_method = (mem_after - mem_before) / 1024 / 1024
         self.casci_dmdm_time_method = time.time() - start
+
         # Initialize DMDM
         dmdm = DMDM(
             h_mo,
@@ -1039,11 +1386,9 @@ class DMDMWorkflow:
         # Get Oscillator Strengths
         osc_strengths = dmdm.get_oscillator_strength(MO_DM)
 
-        current, peak = tracemalloc.get_traced_memory()
-        tracemalloc.reset_peak()
-        self.mem_total = peak / 1024 / 1024
-        tracemalloc.stop()
-
+        mem_after2 = process.memory_info().rss
+        self.mem_total = (mem_after2 - mem_before) / 1024 / 1024
+        self.mem_dmdm = self.mem_method + (mem_after2 - mem_after) / 1024 / 1024
         self.casci_dmdm_time = time.time() - start
         self.casci_dmdm_dmdm = dmdm
 
@@ -1061,8 +1406,6 @@ class DMDMWorkflow:
             'exc_energies_ev': exc_energies[:self.num_states],
             'oscillator_strengths': osc_strengths[:self.num_states],
             "rotational_strengths": self.rotational_strengths[:self.num_states]
-            # 'total_energies': rdm_total_energies,
-            # 'e_cas': e_cas,
         }
         self._casci_done = True
         if self.verbose > 0:
@@ -1074,22 +1417,24 @@ class DMDMWorkflow:
         """Run the classical CASCI workflow using PySCF."""
 
         start = time.time()
-        tracemalloc.start()
+        process = psutil.Process(os.getpid())
+        mem_before = process.memory_info().rss
 
-        # 1. RHF & MP2
+        # 1. RHF
         mf = scf.RHF(self.molecule).run()
 
         # 2. CASCI Setup
         mc = mcscf.CASCI(mf, ncas=self.num_active_orbitals, nelecas=self.num_active_electrons)
+
+        solver = fci.direct_spin1.FCI(self.molecule)
+        solver = fci.addons.fix_spin_(solver, ss=0.0, shift=1.0)
+        solver.spin = 0
+        mc.fcisolver = solver
         mc.fcisolver.nroots = self.num_states
-        
-        if self.mp2:
-            mp2 = mp.MP2(mf).run()
-            _, natorbs = mcscf.addons.make_natural_orbitals(mp2)
-            mc.mo_coeff = natorbs
-        
+
         # Run kernel
         e_tot, e_cas, ci, mo, mo_energy = mc.kernel()
+        self.casci_ground_state = e_tot
         
         # 3. Integral Transformations
         cas_slice = slice(mc.ncore, mc.ncore + self.num_active_orbitals)
@@ -1145,18 +1490,17 @@ class DMDMWorkflow:
             osc_strengths.append(f_val)
 
             # --- Magnetic Transition Dipole Moment ---
-            m_x = np.einsum('pq,pq', trans_rdm1, mx_cas)
-            m_y = np.einsum('pq,pq', trans_rdm1, my_cas)
-            m_z = np.einsum('pq,pq', trans_rdm1, mz_cas)
+            m_x = -np.einsum('pq,pq', trans_rdm1, mx_cas)
+            m_y = -np.einsum('pq,pq', trans_rdm1, my_cas)
+            m_z = -np.einsum('pq,pq', trans_rdm1, mz_cas)
 
             # Rotational Strength
             R_val = mu_x * m_x + mu_y * m_y + mu_z * m_z
             rot_strengths.append(R_val)
         
-        current, peak = tracemalloc.get_traced_memory()
-        self.mem_method = peak / 1024 / 1024
-        self.mem_total = peak / 1024 / 1024
-        tracemalloc.stop()
+        mem_after = process.memory_info().rss
+        self.mem_method = (mem_after - mem_before) / 1024 / 1024
+        self.mem_total = (mem_after - mem_before) / 1024 / 1024
         self.casci_time = time.time() - start
         
         self._casci_results = {
@@ -1175,11 +1519,12 @@ class DMDMWorkflow:
     # QUANTUM (VQE) PATH
     # ==========================
 
-    def run_quantum_vqe(self, use_noisy_backend: bool = False, noise_model: Optional[Any] = None) -> Dict[str, Any]:
+    def run_quantum_vqe(self, use_noisy_backend: bool = False) -> Dict[str, Any]:
         """Run the VQE workflow using qrunch/qchem with optional noise simulation."""
 
         start = time.time()
-        tracemalloc.start()
+        process = psutil.Process(os.getpid())
+        mem_before = process.memory_info().rss
         # 1. Build Configuration (Unchanged)
         molecular_configuration = qc.build_molecular_configuration(molecule=self.molecule_list, basis_set=self.basis)
         
@@ -1205,6 +1550,7 @@ class DMDMWorkflow:
 
         # 3. Run Calculation (Unchanged)
         result = self.calculator.calculate(ground_state_problem)
+        self.vqe_ground_state = result.total_energy.value
 
         # 4. Extract Integrals (Unchanged)
         self.molecule = molecular_configuration.pyscf_molecule
@@ -1213,10 +1559,9 @@ class DMDMWorkflow:
         h_mo = one_electron_integral_transform(mo_coeffs, self.molecule.intor("int1e_kin") + self.molecule.intor("int1e_nuc"))
         g_mo = two_electron_integral_transform(mo_coeffs, self.molecule.intor("int2e"))
 
-        current, peak = tracemalloc.get_traced_memory()
-        tracemalloc.reset_peak()
-        self.mem_method = peak / 1024 / 1024
-        self.vqe_time_method = time.time() - start
+        # mem_after = process.memory_info().rss
+        # self.mem_method = (mem_after - mem_before) / 1024 / 1024
+        # self.vqe_time_method = time.time() - start
         # ---------------------------------------------------------
         # 5. ESTIMATOR CREATION WITH NOISE SUPPORT (MODIFIED)
         # ---------------------------------------------------------
@@ -1225,6 +1570,7 @@ class DMDMWorkflow:
         # If shots is None, the noisy simulator might fail or default to exact (defeating the purpose)
         effective_shots = self.shots if use_noisy_backend else (self.shots if self.shots else None)
         
+        start_rdm = time.time()
         if use_noisy_backend and effective_shots is None:
             effective_shots = 4096 # Default to a reasonable shot count if user didn't specify
             print(f"  [WARN] Noisy backend requires shots. Defaulting to {effective_shots}.")
@@ -1233,21 +1579,10 @@ class DMDMWorkflow:
         if use_noisy_backend:
             print("  [INFO] Configuring Noisy Backend...")
             
-            # Determine the device data to simulate
-            # If noise_model is provided, we assume it's a Qiskit NoiseModel or Kvantify DeviceData
-            # If None, we might default to a generic noise profile or raise an error depending on your needs.
-            # For this example, we assume 'noise_model' is a valid device data object for qrunch.
-            device_data = noise_model 
-            
-            # If you are using a raw Qiskit NoiseModel, you might need to convert it 
-            # or use the 'local_memory_restricted' builder which accepts device data directly.
-            # Based on docs: "device_to_simulate can be None ... or one you create from another backend"
-            
             estimator_noisy = (
                 qc.estimator_creator()
                 .backend()
                 .choose_backend()
-                # .local_memory_restricted(device_to_simulate=device_data) # <-- Key Change
                 .local_qiskit_aer(method="density_matrix")
                 .create()
             )
@@ -1261,20 +1596,20 @@ class DMDMWorkflow:
 
 
             print(f"  [INFO] Noisy backend active. Shots: {self.shots}")
-            
             rdm_calculator_noisy = ReducedDensityMatrixCalculator(estimator=estimator_noisy)
             rdm_calculator_exact = ReducedDensityMatrixCalculator(estimator=estimator_exact)
 
             rdm1 = rdm_calculator_noisy.calculate_1_rdm(circuit=result.final_circuit, shots=effective_shots)
             rdm2 = rdm_calculator_noisy.calculate_2_rdm(circuit=result.final_circuit, shots=effective_shots)
-            rdm3 = rdm_calculator_exact.calculate_3_rdm(circuit=result.final_circuit, shots=None) # The noisy backend does not work with higher rdms
+            # The noisy backend does not work with higher rdms
+            rdm3 = rdm_calculator_exact.calculate_3_rdm(circuit=result.final_circuit, shots=None)
             rdm4 = rdm_calculator_exact.calculate_4_rdm(circuit=result.final_circuit, shots=None)
-    
+            self.vqe_rdms = [rdm1, rdm2, rdm3, rdm4]
         else:
             print("  [INFO] Configuring Ideal (Noiseless) Backend...")
             estimator = (
                 qc.estimator_creator()
-                .memory_restricted() # Default noiseless
+                .memory_restricted()
                 .with_precise_defaults()
                 .create()
             )
@@ -1283,12 +1618,16 @@ class DMDMWorkflow:
 
             rdm1 = rdm_calculator.calculate_1_rdm(circuit=result.final_circuit, shots=None)
             rdm2 = rdm_calculator.calculate_2_rdm(circuit=result.final_circuit, shots=None)
-            rdm3 = rdm_calculator.calculate_3_rdm(circuit=result.final_circuit, shots=None) # The noisy backend does not work with higher rdms
+            rdm3 = rdm_calculator.calculate_3_rdm(circuit=result.final_circuit, shots=None)
             rdm4 = rdm_calculator.calculate_4_rdm(circuit=result.final_circuit, shots=None)
 
-        self.vqe_rdms = [rdm1, rdm2, rdm3, rdm4]
-
+        end_rdm = time.time() - start_rdm
+        mem_after = process.memory_info().rss
+        self.mem_method = (mem_after - mem_before) / 1024 / 1024
+        self.vqe_time_method = time.time() - start
+        mem_before2 = process.memory_info().rss
         # 6. DMDM Calculation (Unchanged logic, just using the new RDMs)
+        start_dmdm = time.time()
         if self.casci_like == False:
             dmdm = DMDM(
                 h_mo,
@@ -1308,7 +1647,7 @@ class DMDMWorkflow:
             h_mo[cas_slice, cas_slice] = ground_state_problem.electronic_structure_integrals.one_body_core_hamiltonian.alpha_alpha
             g_mo[cas_slice, cas_slice, cas_slice, cas_slice] = ground_state_problem.electronic_structure_integrals.two_body_electron_repulsion_integrals.alpha_alpha
 
-
+            # need to slice here since we get full space
             dmdm = DMDM(
                 h_mo[cas_slice, cas_slice],
                 g_mo[cas_slice, cas_slice, cas_slice, cas_slice],
@@ -1322,8 +1661,12 @@ class DMDMWorkflow:
                 rdm4=rdm4
             )
             coefs = mo_coeffs[:, cas_slice]
+        
+        end_dmdm = time.time() - start_dmdm
 
-        # 7. Dipole & Oscillator Strengths (Unchanged)
+
+        # 7. Dipole & Oscillator Strengths
+        start_props = time.time()
         x, y, z = self.molecule.intor('int1e_r', comp=3)
         MO_DM = [
             one_electron_integral_transform(coefs, x),
@@ -1334,14 +1677,10 @@ class DMDMWorkflow:
         exc_energies_hartree = dmdm.get_excitation_energies()
         exc_energies_ev = exc_energies_hartree * self.hartree_to_ev
         osc_strengths = dmdm.get_oscillator_strength(MO_DM)
-        osc_strengths = osc_strengths[exc_energies_ev > 1e-8]
-        exc_energies_ev = exc_energies_ev[exc_energies_ev > 1e-8]
 
-
-        current, peak = tracemalloc.get_traced_memory()
-        tracemalloc.reset_peak()
-        self.mem_total = peak / 1024 / 1024
-        tracemalloc.stop()
+        mem_after2 = process.memory_info().rss
+        self.mem_total = (mem_after2 - mem_before) / 1024 / 1024
+        self.mem_dmdm = (mem_after2 - mem_before2) / 1024 / 1024
         self.vqe_time = time.time() - start
         self.vqe_dmdm = dmdm
 
@@ -1353,12 +1692,15 @@ class DMDMWorkflow:
             one_electron_integral_transform(coefs, z)
         ]
 
-        self.rotational_strengths = dmdm.get_rotational_strength(MO_DM, MO_MG)
+        rotational_strengths = dmdm.get_rotational_strength(MO_DM, MO_MG)
+        self.rotational_strengths = rotational_strengths[exc_energies_ev > 1e-8]
+        osc_strengths = osc_strengths[exc_energies_ev > 1e-8]
+        exc_energies_ev = exc_energies_ev[exc_energies_ev > 1e-8]
 
         self._vqe_results = {
-            'exc_energies_ev': exc_energies_ev[:self.num_states],
-            'oscillator_strengths': osc_strengths[:self.num_states],
-            "rotational_strengths": self.rotational_strengths[:self.num_states]
+            'exc_energies_ev': np.append(exc_energies_ev[:self.num_states], [np.nan]*(self.num_states - exc_energies_ev[:self.num_states].shape[0])),
+            'oscillator_strengths': np.append(osc_strengths[:self.num_states], [np.nan]*(self.num_states-osc_strengths[:self.num_states].shape[0])),
+            "rotational_strengths": np.append(self.rotational_strengths[:self.num_states], [np.nan]*(self.num_states-self.rotational_strengths[:self.num_states].shape[0]))
         }
         self._vqe_done = True
         
