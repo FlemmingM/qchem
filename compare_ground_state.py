@@ -82,12 +82,6 @@ def main():
                     .with_options(
                             options=qc.options.IterativeVqeOptions(max_iterations=vqe_max_iterations,)
                     )
-                    .choose_stopping_criterion(
-                    )
-                    .patience(
-                            patience=10,
-                            threshold=1e-10
-                    )
                     .create(),
 
             "oofast_vqe_as":
@@ -129,12 +123,6 @@ def main():
                     .standard()
                     .with_options(
                             options=qc.options.IterativeVqeOptions(max_iterations=vqe_max_iterations,)
-                    )
-                    .choose_stopping_criterion(
-                    )
-                    .patience(
-                            patience=10,
-                            threshold=1e-10
                     )
                     .create(),
 
