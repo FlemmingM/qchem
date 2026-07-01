@@ -1,9 +1,0 @@
-BASIS
-cc-pVDZ
-LiH
-using the cc-pVDZ basis
-Atomtypes=2 Nosymmetry
-Charge=3.0 Atoms=1
-Li 0.0000000000 0.0000000000 0.0000000000
-Charge=1.0 Atoms=1
-H 0.0000000000 0.0000000000 1.5950000000

@@ -230,7 +230,7 @@ def main():
             num_active_orbitals=args.num_active_orbitals,
             num_active_electrons=args.num_active_electrons,
             num_states=args.num_states,
-            mode=CalculationMode.BOTH,
+            
             casci_like=casci_like,
             calculator=calculator,
             mp2=args.mp2
@@ -242,6 +242,8 @@ def main():
             workflow.run_classical_casci()
             memory_footprints_total.append(workflow.mem_total)
             memory_footprints_method.append(workflow.mem_method)
+
+            print(workflow._casci_results)
 
             # add stats and save file
             pd.DataFrame(
@@ -263,7 +265,6 @@ def main():
             spectral_similarities.append(spectral_similarity(
                 spectrum_casci, spectrum_casci, x
             ))
-            plt.plot(x, spectrum_casci, label = "CASCI", alpha=0.6, color="black", linestyle="--")
 
 
             workflow.run_classical_casci_dmdm()
@@ -290,7 +291,6 @@ def main():
             spectral_similarities.append(spectral_similarity(
                 spectrum_casci, spectrum_casci_dmdm, x
             ))
-            plt.plot(x, spectrum_casci_dmdm, label = "CASCI + DMDM", alpha=0.6)
 
         # Run VQE method
         workflow.run_quantum_vqe()
@@ -321,18 +321,6 @@ def main():
                 spectrum, spectrum_casci, x
             ))
 
-        plt.plot(x, spectrum, label = f"{plot_name}", alpha=0.6)
-
-
-    # Finalise the plot
-    plt.title(
-        f"VQE Comparison{args.molecule} uv-vis spectrum, {args.b}, CAS({args.num_active_orbitals},{args.num_active_electrons}), states: {args.num_states}"
-    )
-
-    plt.legend()
-    plt.xlabel("Energy (eV)")
-    plt.ylabel("Intensity (Oscillator Strength)")
-    plt.savefig(f"{args.molecule}_uv-vis_spectrum_{args.b}_CAS({args.num_active_electrons}_{args.num_active_orbitals})_states_{args.num_states}.png")
 
 
     # save the compute times and memory footprints
